@@ -46,7 +46,7 @@ export const AuthProvider = ({ children }) => {
   // 5. Pass the states and functions into the Provider value
   return (
     <AuthContext.Provider value={{ token, user, login, logout }}>
-      {children}
+      {children}  
     </AuthContext.Provider>
   );
 };
