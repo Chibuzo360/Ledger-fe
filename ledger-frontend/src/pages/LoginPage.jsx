@@ -24,7 +24,7 @@ import { Form, Input, Card, Button, message } from "antd";
             const errorMessage = error.response?.data.message || 'Invalid email/phone or password'
             message.error(errorMessage);
         }finally{
-            setLoading(false);
+            setLoading(false); 
         }
     };
 
@@ -35,7 +35,7 @@ import { Form, Input, Card, Button, message } from "antd";
           
           <Form.Item
             label="Email or Phone Number"
-            name="identity"
+            name="identifier"
             rules={[{ required: true, message: 'Please input your Email or Phone number!' }]}
           >
             <Input placeholder="Enter email or phone" />

@@ -5,10 +5,11 @@ import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import AppLayout from './components/AppLayout'; // 1. Added this import!
 import LoginPage from './pages/LoginPage';     // 2. Added this import!
-import './index.css'; 
+import DashboardPage from './pages/DashboardPage';
+import RegisterPage from './pages/RegistrationPage';
+// import './index.css'; 
 
 // Temporary placeholders until we build the real pages
-const DashboardPlaceholder = () => <div style={{ padding: 50 }}><h2>Dashboard (Fintech style coming soon)</h2></div>;
 const TransactionsPlaceholder = () => <div style={{ padding: 50 }}><h2>Transactions Table</h2></div>;
 
 ReactDOM.createRoot(document.getElementById('root')).render(
@@ -18,6 +19,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         <Routes>
           {/* Public Route - Using your real LoginPage component now! */}
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} /> 
 
           {/* Protected Routes */}
           <Route
@@ -27,7 +29,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
               </ProtectedRoute>
             }
           >
-            <Route path="/dashboard" element={<DashboardPlaceholder />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
             <Route path='/transactions' element={<TransactionsPlaceholder />} />
           </Route>
           
