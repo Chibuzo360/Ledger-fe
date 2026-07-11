@@ -7,10 +7,12 @@ import AppLayout from './components/AppLayout'; // 1. Added this import!
 import LoginPage from './pages/LoginPage';     // 2. Added this import!
 import DashboardPage from './pages/DashboardPage';
 import RegisterPage from './pages/RegistrationPage';
+import TransactionsPage from './pages/TransactionsPage';
+import ExpensesPage from './pages/ExpensesPage';
 // import './index.css'; 
 
 // Temporary placeholders until we build the real pages
-const TransactionsPlaceholder = () => <div style={{ padding: 50 }}><h2>Transactions Table</h2></div>;
+// const TransactionsPlaceholder = () => <div style={{ padding: 50 }}><h2>Transactions Table</h2></div>;
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
@@ -30,7 +32,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(
             }
           >
             <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path='/transactions' element={<TransactionsPlaceholder />} />
+            <Route path='/transactions' element={<TransactionsPage/>} />
+            <Route path='/expenses' element={<ExpensesPage/>} />
           </Route>
           
           {/* Root redirect: Send users to /dashboard by default */}

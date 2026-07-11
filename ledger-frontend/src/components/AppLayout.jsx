@@ -24,6 +24,10 @@ const AppLayout = () => {
       key: '2',
       label: <Link to="/transactions">Transactions</Link>,
     },
+    {
+      key: '3',
+      label: <Link to="/expenses">Expenses</Link>,
+    },
     // We will add more links (Products, Stock In, etc.) as we build them
   ];
 
