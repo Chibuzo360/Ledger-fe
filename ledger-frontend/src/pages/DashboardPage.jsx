@@ -156,7 +156,7 @@ const DashboardPage = () => {
     label: {
       type: "outer",
       formatter: (datum) => {
-        const percent = datum.percentage ?? datum.percent;
+        const percent =  datum.percent; // removed "datum.percentage ?? from this line"
         const percentText =
           typeof percent === "number" ? `${(percent * 100).toFixed(0)}%` : "";
         return `${datum.type} ${percentText}`.trim();
