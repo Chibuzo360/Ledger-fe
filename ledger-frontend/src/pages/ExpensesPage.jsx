@@ -97,7 +97,7 @@ const ExpensesPage = () => {
         actions: transactionActions
       },
     ]);
-  });
+  },[]);
 
   const columns = [
     { title: "Txn ID", dataIndex: "id", key: "id" },
