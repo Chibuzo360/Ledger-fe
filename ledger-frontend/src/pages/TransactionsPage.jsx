@@ -81,6 +81,8 @@ const TransactionsPage = () => {
     setErrorMsg(null);
     try {
       const response = await api.get("/transactions"); // CHANGED: removed the stray body object
+      // i will also like to add stock/sales details to transaction details. It will contain the items bought in a particular transaction.
+      // My implementation is basically creating another mapped object to contain txn items which ill add to "mapped" Later.
       const mapped = response.data.map((txn) => ({
         key: txn.id,
         id: txn.id,
