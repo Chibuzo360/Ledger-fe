@@ -32,6 +32,15 @@ dayjs.extend(isBetween);
 
 const { Title, Text } = Typography;
 
+// NEW: maps the "Search By" dropdown keys to the actual field names on each
+// mapped transaction object (see `mapped` inside fetchTransactions).
+const SEARCH_FIELD_MAP = {
+  1: { key: "id", label: "Transaction ID" },
+  2: { key: "customer", label: "Customer Name" },
+  3: { key: "customerPhone", label: "Customer Phone" },
+  4: { key: "amount", label: "Amount" },
+};
+
 const TransactionsPage = () => {
   const { user } = useAuth();
   const isDirector = user?.role === "director";
@@ -61,8 +70,13 @@ const TransactionsPage = () => {
   const [detailsTxn, setDetailsTxn] = useState(null);
 
   const [filterMode, setFilterMode] = useState("single"); // "single" | "range"
-  const [singleDate, setSingleDate] = useState(null); // dayjs object or null
+  const [singleDate, setSingleDate] = useState(null);
   const [dateRange, setDateRange] = useState(null);
+
+  // NEW: search state. searchFieldKey is null until the user picks a field
+  // from the "Search By" dropdown — until then, search checks all fields.
+  const [searchFieldKey, setSearchFieldKey] = useState(null);
+  const [searchText, setSearchText] = useState("");
 
   const getFilteredTransactions = (transactions) => {
     if (filterMode === "single" && singleDate) {
@@ -75,7 +89,31 @@ const TransactionsPage = () => {
         dayjs(t.date).isBetween(dateRange[0], dateRange[1], "day", "[]"),
       );
     }
-    return transactions; // no filter selected = show everything
+    return transactions;
+  };
+
+  // NEW: applies the text search on top of whatever's passed in.
+  // If a specific field is selected, only that field is checked.
+  // If no field is selected (searchFieldKey === null), all four fields
+  // are checked and a match on ANY of them counts.
+  const getSearchedTransactions = (transactions) => {
+    if (!searchText.trim()) return transactions;
+    const text = searchText.trim().toLowerCase();
+
+    if (searchFieldKey) {
+      const fieldKey = SEARCH_FIELD_MAP[searchFieldKey].key;
+      return transactions.filter((t) =>
+        String(t[fieldKey] ?? "").toLowerCase().includes(text),
+      );
+    }
+
+    return transactions.filter(
+      (t) =>
+        String(t.id).includes(text) ||
+        (t.customer ?? "").toLowerCase().includes(text) ||
+        (t.customerPhone ?? "").toLowerCase().includes(text) ||
+        String(t.amount).includes(text),
+    );
   };
 
   const formatDate = (isoString) => {
@@ -89,11 +127,6 @@ const TransactionsPage = () => {
     });
   };
 
-  // CHANGED: computeStats no longer filters for "today" internally — it now
-  // just computes stats over WHATEVER array it's handed. This is what fixes
-  // the range-mode zero bug: previously it re-filtered the already-filtered
-  // range data down to "only today", which is empty unless today happens to
-  // fall inside the picked range.
   const computeStats = (transactions) => {
     const count = transactions.length;
 
@@ -119,8 +152,6 @@ const TransactionsPage = () => {
     };
   };
 
-  // NEW: picks the label for the first stat card based on the active filter,
-  // so the card title always matches what its number actually represents.
   const getPeriodLabel = () => {
     if (filterMode === "range" && dateRange) {
       return `Transactions (${dateRange[0].format("DD MMM")} – ${dateRange[1].format("DD MMM")})`;
@@ -128,7 +159,7 @@ const TransactionsPage = () => {
     if (filterMode === "single" && singleDate) {
       return `Transactions on ${singleDate.format("DD MMM YYYY")}`;
     }
-    return "All Transactions"; // no filter picked = card matches the unfiltered table
+    return "All Transactions";
   };
 
   const fetchTransactions = async () => {
@@ -362,10 +393,17 @@ const TransactionsPage = () => {
     { title: "Actions", key: "actions", render: renderActions },
   ];
 
-  // Both derived here, once per render, from current filter state.
-  // filteredTransactions feeds the Table; stats feeds the cards.
-  const filteredTransactions = getFilteredTransactions(transactionRecord);
-  const stats = computeStats(filteredTransactions);
+  // Date filter feeds the stat cards. Date filter + text search together
+  // feed the table.
+  const dateFilteredTransactions = getFilteredTransactions(transactionRecord);
+  const tableTransactions = getSearchedTransactions(dateFilteredTransactions);
+  const stats = computeStats(dateFilteredTransactions);
+
+  // NEW: label shown on the "Search By" dropdown button — reflects the
+  // currently selected field, or falls back to "Search By" if none picked.
+  const searchByLabel = searchFieldKey
+    ? SEARCH_FIELD_MAP[searchFieldKey].label
+    : "Search By";
 
   return (
     <div style={{ padding: "16px" }}>
@@ -407,8 +445,8 @@ const TransactionsPage = () => {
                   <Statistic
                     title="Avg. Amount per Transaction"
                     value={stats.averageTransactionsToday}
-                    prefix="₦"
                     precision={2}
+                    prefix="₦"
                     styles={{ content: { color: "#3f8600" } }}
                   />
                 </Card>
@@ -460,13 +498,29 @@ const TransactionsPage = () => {
             />
           )}
           <Col>
-            <Dropdown menu={{ items: menuItems }} trigger={"click"}>
-              <Button style={{ width: 100 }}>
-                Search By <DownOutlined />
+            {/* CHANGED: dropdown now sets searchFieldKey and its label
+                reflects the current selection */}
+            <Dropdown
+              menu={{
+                items: menuItems,
+                onClick: ({ key }) => setSearchFieldKey(Number(key)),
+                selectedKeys: searchFieldKey ? [String(searchFieldKey)] : [],
+              }}
+              trigger={["click"]}
+            >
+              <Button style={{ width: 140 }}>
+                {searchByLabel} <DownOutlined />
               </Button>
             </Dropdown>
             <Divider orientation="vertical" />
-            <Search placeholder="Search transactions" style={{ width: 200 }} />
+            {/* CHANGED: controlled value + onChange for live filtering as you type */}
+            <Search
+              placeholder="Search transactions"
+              style={{ width: 200 }}
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              allowClear
+            />
           </Col>
         </Row>
 
@@ -479,7 +533,7 @@ const TransactionsPage = () => {
             style={{ width: "100%" }}
           >
             <Table
-              dataSource={filteredTransactions}
+              dataSource={tableTransactions}
               columns={columns}
               pagination={false}
               scroll={{ x: true }}
