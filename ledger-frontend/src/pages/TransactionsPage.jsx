@@ -18,25 +18,23 @@ import {
   message,
   Checkbox,
   Descriptions,
+  DatePicker,
+  Segmented,
 } from "antd";
 import { DownOutlined, MoreOutlined, PlusOutlined } from "@ant-design/icons";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/axiosConfig";
 import currentDayDate from "../components/CurrentDayDate";
 import Search from "antd/es/input/Search";
+import dayjs from "dayjs";
+import isBetween from "dayjs/plugin/isBetween";
+dayjs.extend(isBetween);
 
 const { Title, Text } = Typography;
 
 const TransactionsPage = () => {
   const { user } = useAuth();
   const isDirector = user?.role === "director";
-
-  const [stats, setStats] = useState({
-    transactionsToday: 0,
-    averageTransactionsToday: 0,
-    transactionCount: 0,
-    pendingTransactions: 0,
-  });
 
   const menuItems = [
     { key: 1, label: "TransactionID" },
@@ -62,6 +60,24 @@ const TransactionsPage = () => {
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [detailsTxn, setDetailsTxn] = useState(null);
 
+  const [filterMode, setFilterMode] = useState("single"); // "single" | "range"
+  const [singleDate, setSingleDate] = useState(null); // dayjs object or null
+  const [dateRange, setDateRange] = useState(null);
+
+  const getFilteredTransactions = (transactions) => {
+    if (filterMode === "single" && singleDate) {
+      return transactions.filter((t) =>
+        dayjs(t.date).isSame(singleDate, "day"),
+      );
+    }
+    if (filterMode === "range" && dateRange) {
+      return transactions.filter((t) =>
+        dayjs(t.date).isBetween(dateRange[0], dateRange[1], "day", "[]"),
+      );
+    }
+    return transactions; // no filter selected = show everything
+  };
+
   const formatDate = (isoString) => {
     if (!isoString) return "—";
     return new Date(isoString).toLocaleString("en-GB", {
@@ -73,16 +89,53 @@ const TransactionsPage = () => {
     });
   };
 
-  // CHANGED: fixed — this had handleCreateTransaction's body accidentally pasted in here,
-  // referencing "values" which doesn't exist in this function's scope.
-  // A GET request also never takes a body as the 2nd argument — that's a config object slot.
+  // CHANGED: computeStats no longer filters for "today" internally — it now
+  // just computes stats over WHATEVER array it's handed. This is what fixes
+  // the range-mode zero bug: previously it re-filtered the already-filtered
+  // range data down to "only today", which is empty unless today happens to
+  // fall inside the picked range.
+  const computeStats = (transactions) => {
+    const count = transactions.length;
+
+    const average =
+      count === 0
+        ? 0
+        : transactions.reduce((sum, t) => sum + t.amount, 0) / count;
+
+    const totalTransactionValue = transactions.reduce(
+      (sum, t) => sum + t.amount,
+      0,
+    );
+
+    const pendingTransactions = transactions.filter(
+      (t) => t.status === "pending",
+    ).length;
+
+    return {
+      transactionsToday: count,
+      averageTransactionsToday: average,
+      totalTransactionValue,
+      pendingTransactions,
+    };
+  };
+
+  // NEW: picks the label for the first stat card based on the active filter,
+  // so the card title always matches what its number actually represents.
+  const getPeriodLabel = () => {
+    if (filterMode === "range" && dateRange) {
+      return `Transactions (${dateRange[0].format("DD MMM")} – ${dateRange[1].format("DD MMM")})`;
+    }
+    if (filterMode === "single" && singleDate) {
+      return `Transactions on ${singleDate.format("DD MMM YYYY")}`;
+    }
+    return "All Transactions"; // no filter picked = card matches the unfiltered table
+  };
+
   const fetchTransactions = async () => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const response = await api.get("/transactions"); // CHANGED: removed the stray body object
-      // i will also like to add stock/sales details to transaction details. It will contain the items bought in a particular transaction.
-      // My implementation is basically creating another mapped object to contain txn items which ill add to "mapped" Later.
+      const response = await api.get("/transactions");
       const mapped = response.data.map((txn) => ({
         key: txn.id,
         id: txn.id,
@@ -114,7 +167,6 @@ const TransactionsPage = () => {
     fetchTransactions();
   }, []);
 
-  // CHANGED: this is where the paymentStatus field actually belongs — moved back here
   const handleCreateTransaction = async (values) => {
     setSubmitting(true);
     try {
@@ -123,7 +175,7 @@ const TransactionsPage = () => {
         customerPhone: values.customerPhone || null,
         totalAmount: values.totalAmount,
         amountPaid: values.amountPaid,
-        paymentStatus: values.alreadyConfirmed ? "confirmed" : undefined, // CHANGED: moved here from fetchTransactions
+        paymentStatus: values.alreadyConfirmed ? "confirmed" : undefined,
       });
       message.success("Transaction recorded!");
       form.resetFields();
@@ -301,10 +353,19 @@ const TransactionsPage = () => {
         </Tag>
       ),
     },
-    // CHANGED: added render for friendly date formatting
-    { title: "Date", dataIndex: "date", key: "date", render: (date) => formatDate(date) },
+    {
+      title: "Date",
+      dataIndex: "date",
+      key: "date",
+      render: (date) => formatDate(date),
+    },
     { title: "Actions", key: "actions", render: renderActions },
   ];
+
+  // Both derived here, once per render, from current filter state.
+  // filteredTransactions feeds the Table; stats feeds the cards.
+  const filteredTransactions = getFilteredTransactions(transactionRecord);
+  const stats = computeStats(filteredTransactions);
 
   return (
     <div style={{ padding: "16px" }}>
@@ -333,7 +394,7 @@ const TransactionsPage = () => {
           <Col xs={24} sm={12} lg={6}>
             <Card variant="plain">
               <Statistic
-                title="Today's Transactions"
+                title={getPeriodLabel()}
                 value={stats.transactionsToday}
               />
             </Card>
@@ -344,9 +405,10 @@ const TransactionsPage = () => {
               <Col xs={24} sm={12} lg={6}>
                 <Card variant="plain">
                   <Statistic
-                    title="Average Amount per Transaction"
+                    title="Avg. Amount per Transaction"
                     value={stats.averageTransactionsToday}
                     prefix="₦"
+                    precision={2}
                     styles={{ content: { color: "#3f8600" } }}
                   />
                 </Card>
@@ -354,8 +416,8 @@ const TransactionsPage = () => {
               <Col xs={24} sm={12} lg={6}>
                 <Card variant="plain">
                   <Statistic
-                    title="Total Transactions"
-                    value={stats.transactionCount}
+                    title="Total Transaction Value"
+                    value={stats.totalTransactionValue}
                     prefix="₦"
                     styles={{ content: { color: "#cf1322" } }}
                   />
@@ -366,7 +428,6 @@ const TransactionsPage = () => {
                   <Statistic
                     title="Pending Transactions"
                     value={stats.pendingTransactions}
-                    prefix="₦"
                     styles={{ content: { color: "#d46b08" } }}
                   />
                 </Card>
@@ -376,11 +437,28 @@ const TransactionsPage = () => {
         </Row>
 
         <Row justify="space-between" align="middle" wrap>
-          <Col>
-            <Button>{filterDate}</Button>
-            <Divider orientation="vertical" />
-            <Button>Filter by</Button>
-          </Col>
+          <Segmented
+            options={["Single", "Range"]}
+            value={filterMode === "single" ? "Single" : "Range"}
+            onChange={(val) =>
+              setFilterMode(val === "Single" ? "single" : "range")
+            }
+          />
+          <Divider orientation="vertical" />
+
+          {filterMode === "single" ? (
+            <DatePicker
+              value={singleDate}
+              onChange={(date) => setSingleDate(date)}
+              allowClear
+            />
+          ) : (
+            <DatePicker.RangePicker
+              value={dateRange}
+              onChange={(dates) => setDateRange(dates)}
+              allowClear
+            />
+          )}
           <Col>
             <Dropdown menu={{ items: menuItems }} trigger={"click"}>
               <Button style={{ width: 100 }}>
@@ -401,7 +479,7 @@ const TransactionsPage = () => {
             style={{ width: "100%" }}
           >
             <Table
-              dataSource={transactionRecord}
+              dataSource={filteredTransactions}
               columns={columns}
               pagination={false}
               scroll={{ x: true }}
@@ -548,14 +626,12 @@ const TransactionsPage = () => {
             <Descriptions.Item label="Confirmed By">
               {detailsTxn.confirmedBy}
             </Descriptions.Item>
-            {/* CHANGED: now using formatDate instead of raw ISO string */}
             <Descriptions.Item label="Confirmed At">
               {formatDate(detailsTxn.confirmedAt)}
             </Descriptions.Item>
             <Descriptions.Item label="Payment Proof">
               {detailsTxn.paymentProof || "—"}
             </Descriptions.Item>
-            {/* CHANGED: now using formatDate instead of raw ISO string */}
             <Descriptions.Item label="Date">
               {formatDate(detailsTxn.date)}
             </Descriptions.Item>
