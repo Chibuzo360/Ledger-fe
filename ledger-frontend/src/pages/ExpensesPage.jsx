@@ -61,6 +61,10 @@ const ExpensesPage = () => {
             </Dropdown>
   );
 
+  const fetchExepenses=() =>{
+    
+  }
+
   useEffect(() => {
     setTransactionRecord([
       {
