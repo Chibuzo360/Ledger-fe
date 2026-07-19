@@ -5,240 +5,345 @@ import {
   Card,
   Statistic,
   Table,
-  Tag,
   Typography,
   Button,
   Space,
   Divider,
-  Dropdown,
+  Modal,
+  Form,
+  Input,
+  InputNumber,
+  message,
+  DatePicker,
+  Segmented,
 } from "antd";
-import {
-  DownOutlined,
-  MoreOutlined,
-  PlusOutlined,
-  SearchOutlined,
-  setTwoToneColor,
-} from "@ant-design/icons";
-import { Pie, Column } from "@ant-design/charts";
+import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/axiosConfig";
-import currentDayDate from "../components/CurrentDayDate";
-import Input from "antd/es/input/Input";
 import Search from "antd/es/input/Search";
+import dayjs from "dayjs";
+import isBetween from "dayjs/plugin/isBetween";
+dayjs.extend(isBetween);
 
 const { Title, Text } = Typography;
 
 const ExpensesPage = () => {
   const { user } = useAuth();
-  const isDirector = user?.role === "director";
 
-  const [stats, setStats] = useState({
-    transactionsToday: 0,
-    averageTransactionsToday: 0,
-    transactionCount: 0,
-    pendingTransactions: 0,
-  });
+  const [expenseRecord, setExpenseRecord] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState(null);
 
-  const menuItems = [
-    { key: 1, label: "TransactionID" },
-    { key: 2, label: "CustomerName" },
-    { key: 3, label: "CustomerPhone" },
-    { key: 4, label: "Amount" },
-  ];
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [form] = Form.useForm();
 
-  const actionItems = [
-    {key: 1, label: "Details"},
-    {key: 2, label: "Delete"}
-  ]
+  const [filterMode, setFilterMode] = useState("single"); // "single" | "range"
+  const [singleDate, setSingleDate] = useState(null);
+  const [dateRange, setDateRange] = useState(null);
 
-  const [transactionRecord, setTransactionRecord] = useState([]);
-  const [filterDate, setFilterDate] = useState(currentDayDate());
-  const [transactionActions, setTransactionActions] = useState(
-    <Dropdown menu={{ items: actionItems }} trigger={"click"}>
-              <Button style={{ width: 10 }} type="text">
-                 <MoreOutlined/>
-              </Button>
-            </Dropdown>
-  );
+  const [searchText, setSearchText] = useState("");
 
-  const fetchExepenses=() =>{
-    
-  }
+  const formatDate = (isoString) => {
+    if (!isoString) return "—";
+    return new Date(isoString).toLocaleString("en-GB", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const fetchExpenses = async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const response = await api.get("/expenses");
+      const mapped = response.data.map((exp) => ({
+        key: exp.id,
+        id: exp.id,
+        description: exp.description,
+        amount: exp.amount,
+        recordedBy: exp.recordedBy?.name ?? "—",
+        branch: exp.branch?.name ?? "—",
+        date: exp.createdAt,
+      }));
+      setExpenseRecord(mapped);
+    } catch (error) {
+      if (!error.response) {
+        setErrorMsg("Can't reach the server. Is the backend running?");
+      } else {
+        setErrorMsg(`Server error: ${error.response.status}`);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    setTransactionRecord([
-      {
-        key: "1",
-        id: "TXN-001",
-        customer: "Alhaji Musa",
-        amount: 120000,
-        amountPaid: 120000,
-        status: "confirmed",
-        type: "full",
-        date: "2026-07-04",
-        actions: transactionActions
-      },
-      {
-        key: "2",
-        id: "TXN-002",
-        customer: "Chidi Okafor",
-        amount: 450000,
-        amountPaid: 0,
-        status: "pending",
-        type: "credit",
-        date: "2026-07-04",
-        actions: transactionActions
-      },
-      {
-        key: "3",
-        id: "TXN-003",
-        customer: "Emeka & Sons",
-        amount: 85000,
-        amountPaid: 25000,
-        status: "confirmed",
-        type: "part_payment",
-        date: "2026-07-03",
-        actions: transactionActions
-      },
-    ]);
-  },[]);
+    fetchExpenses();
+  }, []);
+
+  const handleCreateExpense = async (values) => {
+    setSubmitting(true);
+    try {
+      await api.post("/expenses", {
+        description: values.description,
+        amount: values.amount,
+      });
+      message.success("Expense recorded!");
+      form.resetFields();
+      setIsModalOpen(false);
+      fetchExpenses();
+    } catch (error) {
+      if (!error.response) {
+        message.error("Can't reach the server.");
+      } else {
+        message.error(`Failed to save: ${error.response.status}`);
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const performDelete = async (id) => {
+    try {
+      await api.delete(`/expenses/${id}`);
+      message.success("Expense deleted.");
+      fetchExpenses();
+    } catch (error) {
+      if (!error.response) {
+        message.error("Can't reach the server.");
+      } else {
+        message.error(`Failed to delete: ${error.response.status}`);
+      }
+    }
+  };
+
+  const handleDelete = (record) => {
+    Modal.confirm({
+      title: "Delete this expense?",
+      content: `${record.description} — ₦${record.amount.toLocaleString()}. This cannot be undone.`,
+      okText: "Delete",
+      okType: "danger",
+      onOk: () => performDelete(record.id),
+    });
+  };
+
+  const getFilteredExpenses = (expenses) => {
+    if (filterMode === "single" && singleDate) {
+      return expenses.filter((e) => dayjs(e.date).isSame(singleDate, "day"));
+    }
+    if (filterMode === "range" && dateRange) {
+      return expenses.filter((e) =>
+        dayjs(e.date).isBetween(dateRange[0], dateRange[1], "day", "[]"),
+      );
+    }
+    return expenses;
+  };
+
+  const getSearchedExpenses = (expenses) => {
+    if (!searchText.trim()) return expenses;
+    const text = searchText.trim().toLowerCase();
+    return expenses.filter(
+      (e) =>
+        e.description.toLowerCase().includes(text) ||
+        String(e.id).includes(text),
+    );
+  };
+
+  const computeStats = (expenses) => {
+    const count = expenses.length;
+    const totalValue = expenses.reduce((sum, e) => sum + e.amount, 0);
+    const average = count === 0 ? 0 : totalValue / count;
+    return { count, totalValue, average };
+  };
+
+  const getPeriodLabel = () => {
+    if (filterMode === "range" && dateRange) {
+      return `Expenses (${dateRange[0].format("DD MMM")} – ${dateRange[1].format("DD MMM")})`;
+    }
+    if (filterMode === "single" && singleDate) {
+      return `Expenses on ${singleDate.format("DD MMM YYYY")}`;
+    }
+    return "All Expenses";
+  };
+
+  const dateFilteredExpenses = getFilteredExpenses(expenseRecord);
+  const tableExpenses = getSearchedExpenses(dateFilteredExpenses);
+  const stats = computeStats(dateFilteredExpenses);
 
   const columns = [
-    { title: "Txn ID", dataIndex: "id", key: "id" },
-    { title: "Customer", dataIndex: "customer", key: "customer" },
+    { title: "ID", dataIndex: "id", key: "id" },
+    { title: "Description", dataIndex: "description", key: "description" },
     {
       title: "Amount",
       dataIndex: "amount",
       key: "amount",
       render: (amount) => `₦${amount.toLocaleString()}`,
     },
+    { title: "Recorded By", dataIndex: "recordedBy", key: "recordedBy" },
+    { title: "Branch", dataIndex: "branch", key: "branch" },
     {
-      title: "Amount_Paid",
-      dataIndex: "amountPaid",
-      key: "amountPaid",
-      render: (amount) => `₦${amount.toLocaleString()}`,
+      title: "Date",
+      dataIndex: "date",
+      key: "date",
+      render: (date) => formatDate(date),
     },
-    { title: "Type", dataIndex: "type", key: "type" },
     {
-      title: "Status",
-      dataIndex: "status",
-      key: "status",
-      render: (status) => (
-        <Tag
-          color={
-            status === "confirmed"
-              ? "green"
-              : status === "pending"
-                ? "gold"
-                : "blue"
-          }
-        >
-          {status.toUpperCase()}
-        </Tag>
+      title: "Actions",
+      key: "actions",
+      render: (_, record) => (
+        <Button
+          type="text"
+          danger
+          icon={<DeleteOutlined />}
+          onClick={() => handleDelete(record)}
+        />
       ),
     },
-    { title: "Date", dataIndex: "date", key: "date" },
-    { title: "Actions", dataIndex: "actions", key: "actions" },
   ];
 
   return (
     <div style={{ padding: "16px" }}>
       <Space orientation="vertical" size="large" style={{ width: "100%" }}>
-        {/* Header */}
         <Row justify="space-between" align="middle" wrap>
           <Col>
             <Title level={3} style={{ margin: 0 }}>
-              Expenses Records
+              Expenses
             </Title>
             <Text type="secondary">
-              Here is an overview of today's transactions.
+              Track and record business expenses.
             </Text>
           </Col>
           <Col>
-            <Button type="primary" icon={<PlusOutlined />}>
-              Record New Sale
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => setIsModalOpen(true)}
+            >
+              Record Expense
             </Button>
           </Col>
         </Row>
 
-        {/* Stats Cards */}
         <Row gutter={[16, 16]}>
-          <Col xs={24} sm={12} lg={6}>
+          <Col xs={24} sm={12} lg={8}>
+            <Card variant="plain">
+              <Statistic title={getPeriodLabel()} value={stats.count} />
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} lg={8}>
             <Card variant="plain">
               <Statistic
-                title="Today's Transactions"
-                value={stats.transactionsToday}
+                title="Total Expense Value"
+                value={stats.totalValue}
+                prefix="₦"
+                styles={{ content: { color: "#cf1322" } }}
               />
             </Card>
           </Col>
-
-          {isDirector && (
-            <>
-              <Col xs={24} sm={12} lg={6}>
-                <Card variant="plain">
-                  <Statistic
-                    title="Average Amount per Transaction"
-                    value={stats.averageTransactionsToday}
-                    prefix="₦"
-                    styles={{ content: { color: "#3f8600" } }}
-                  />
-                </Card>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
-                <Card variant="plain">
-                  <Statistic
-                    title="Total Transactions"
-                    value={stats.transactionCount}
-                    prefix="₦"
-                    styles={{ content: { color: "#cf1322" } }}
-                  />
-                </Card>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
-                <Card variant="plain">
-                  <Statistic
-                    title="Pending Transactions"
-                    value={stats.pendingTransactions}
-                    prefix="₦"
-                    styles={{ content: { color: "#d46b08" } }}
-                  />
-                </Card>
-              </Col>
-            </>
-          )}
+          <Col xs={24} sm={12} lg={8}>
+            <Card variant="plain">
+              <Statistic
+                title="Avg. Expense"
+                value={stats.average}
+                precision={2}
+                prefix="₦"
+                styles={{ content: { color: "#d46b08" } }}
+              />
+            </Card>
+          </Col>
         </Row>
 
-        {/*Table modifiers */}
-        {/*The search 'onSearch' attribute will be added later */}
         <Row justify="space-between" align="middle" wrap>
           <Col>
-            <Button>{filterDate}</Button>
+            <Segmented
+              options={["Single", "Range"]}
+              value={filterMode === "single" ? "Single" : "Range"}
+              onChange={(val) =>
+                setFilterMode(val === "Single" ? "single" : "range")
+              }
+            />
             <Divider orientation="vertical" />
-            <Button>Filter by</Button>
+            {filterMode === "single" ? (
+              <DatePicker
+                value={singleDate}
+                onChange={(date) => setSingleDate(date)}
+                allowClear
+              />
+            ) : (
+              <DatePicker.RangePicker
+                value={dateRange}
+                onChange={(dates) => setDateRange(dates)}
+                allowClear
+              />
+            )}
           </Col>
           <Col>
-            <Dropdown menu={{ items: menuItems }} trigger={"click"}>
-              <Button style={{ width: 100 }}>
-                Search By <DownOutlined />
-              </Button>
-            </Dropdown>
-            <Divider orientation="vertical" />
-            <Search placeholder="Search transactions" style={{ width: 200 }} />
+            <Search
+              placeholder="Search by description or ID"
+              style={{ width: 240 }}
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              allowClear
+            />
           </Col>
         </Row>
 
-        {/*The transaction table */}
+        {errorMsg && <Text type="danger">{errorMsg}</Text>}
+
         <Row>
-          <Card title="Recent Transactions" variant="plain" style={{ width: "100%" }} >
+          <Card title="Recorded Expenses" variant="plain" style={{ width: "100%" }}>
             <Table
-              dataSource={transactionRecord}
+              dataSource={tableExpenses}
               columns={columns}
               pagination={false}
               scroll={{ x: true }}
+              loading={loading}
             />
           </Card>
         </Row>
       </Space>
+
+      <Modal
+        title="Record Expense"
+        open={isModalOpen}
+        onCancel={() => {
+          setIsModalOpen(false);
+          form.resetFields();
+        }}
+        footer={null}
+      >
+        <Form form={form} layout="vertical" onFinish={handleCreateExpense}>
+          <Form.Item
+            label="Description"
+            name="description"
+            rules={[{ required: true, message: "Description is required" }]}
+          >
+            <Input placeholder="e.g. Fuel for delivery truck" />
+          </Form.Item>
+
+          <Form.Item
+            label="Amount (₦)"
+            name="amount"
+            rules={[{ required: true, message: "Amount is required" }]}
+          >
+            <InputNumber
+              min={0}
+              style={{ width: "100%" }}
+              placeholder="e.g. 15000"
+            />
+          </Form.Item>
+
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={submitting} block>
+              Save Expense
+            </Button>
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 };
