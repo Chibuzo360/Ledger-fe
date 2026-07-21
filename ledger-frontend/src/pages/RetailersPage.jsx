@@ -27,10 +27,10 @@ dayjs.extend(isBetween);
 
 const { Title, Text } = Typography;
 
-const ExpensesPage = () => {
+const RetailersPage = () => {
   const { user } = useAuth();
 
-  const [expenseRecord, setExpenseRecord] = useState([]);
+  const [retailRecord, setRetailRecord] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState(null);
 
@@ -55,21 +55,25 @@ const ExpensesPage = () => {
     });
   };
 
-  const fetchExpenses = async () => {
+  const fetchRetailers = async () => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const response = await api.get("/expenses");
-      const mapped = response.data.map((exp) => ({
-        key: exp.id,
-        id: exp.id,
-        description: exp.description,
-        amount: exp.amount,
-        recordedBy: exp.recordedBy?.name ?? "—",
-        branch: exp.branch?.name ?? "—",
-        date: exp.createdAt,
+      const response = await api.get("/retailers");
+      const mapped = response.data.map((retailer) => ({
+        key: retailer.id,
+        id: retailer.id,
+        businessName: retailer.businessName,
+        contactName: retailer.contactName,
+        email: retailer.email,
+        phone: retailer.phone,
+        creditLimit: retailer.creditLimit,
+        balance: retailer.balance,
+        address: retailer.address,
+        branch: retailer.branch?.name ?? "—",
+        date: retailer.createdAt
       }));
-      setExpenseRecord(mapped);
+      setRetailRecord(mapped);
     } catch (error) {
       if (!error.response) {
         setErrorMsg("Can't reach the server. Is the backend running?");
@@ -82,20 +86,26 @@ const ExpensesPage = () => {
   };
 
   useEffect(() => {
-    fetchExpenses();
+    fetchRetailers();
   }, []);
 
-  const handleCreateExpense = async (values) => {
+  const handleAddRetailer = async (values) => {
     setSubmitting(true);
     try {
-      await api.post("/expenses", {
-        description: values.description,
-        amount: values.amount,
+      await api.post("/retailers", {
+        contactName: values.contactName,
+        businessName: values.businessName,
+        phone: values.phone,
+        address: values.address,
+        balance: values.balance,
       });
-      message.success("Expense recorded!");
+      // The next version(if any), will have a feature that auto-calculates retailers balance from the transactions record
+      // it will also be able to track retailers orders and details
+      // will adding a description table at the backend stry from my mvp?, does the current state of this retailer page work or will it need whole tables for each retailers which will be a big problem
+      message.success("Retailer Added!");
       form.resetFields();
       setIsModalOpen(false);
-      fetchExpenses();
+      fetchRetailers();
     } catch (error) {
       if (!error.response) {
         message.error("Can't reach the server.");
@@ -109,9 +119,9 @@ const ExpensesPage = () => {
 
   const performDelete = async (id) => {
     try {
-      await api.delete(`/expenses/${id}`);
-      message.success("Expense deleted.");
-      fetchExpenses();
+      await api.delete(`/retailers/${id}`);
+      message.success("Retailer record deleted.");
+      fetchRetailers();
     } catch (error) {
       if (!error.response) {
         message.error("Can't reach the server.");
@@ -123,7 +133,7 @@ const ExpensesPage = () => {
 
   const handleDelete = (record) => {
     Modal.confirm({
-      title: "Delete this expense?",
+      title: "Are you sure you want to delete this retailer's record?",
       content: `${record.description} — ₦${record.amount.toLocaleString()}. This cannot be undone.`,
       okText: "Delete",
       okType: "danger",
@@ -131,31 +141,31 @@ const ExpensesPage = () => {
     });
   };
 
-  const getFilteredExpenses = (expenses) => {
+  const getFilteredRetailers = (retailers) => {
     if (filterMode === "single" && singleDate) {
-      return expenses.filter((e) => dayjs(e.date).isSame(singleDate, "day"));
+      return retailers.filter((e) => dayjs(e.date).isSame(singleDate, "day"));
     }
     if (filterMode === "range" && dateRange) {
-      return expenses.filter((e) =>
+      return retailers.filter((e) =>
         dayjs(e.date).isBetween(dateRange[0], dateRange[1], "day", "[]"),
       );
     }
-    return expenses;
+    return retailers;
   };
 
-  const getSearchedExpenses = (expenses) => {
-    if (!searchText.trim()) return expenses;
+  const getSearchedRetailer = (retailers) => {
+    if (!searchText.trim()) return retailers;
     const text = searchText.trim().toLowerCase();
-    return expenses.filter(
+    return retailers.filter(
       (e) =>
         e.description.toLowerCase().includes(text) ||
         String(e.id).includes(text),
     );
   };
 
-  const computeStats = (expenses) => {
-    const count = expenses.length;
-    const totalValue = expenses.reduce((sum, e) => sum + e.amount, 0);
+  const computeStats = (retailers) => {
+    const count = retailers.length;
+    const totalValue = retailers.reduce((sum, e) => sum + e.amount, 0);
     const average = count === 0 ? 0 : totalValue / count;
     return { count, totalValue, average };
   };
@@ -165,25 +175,28 @@ const ExpensesPage = () => {
       return `Expenses (${dateRange[0].format("DD MMM")} – ${dateRange[1].format("DD MMM")})`;
     }
     if (filterMode === "single" && singleDate) {
-      return `Expenses on ${singleDate.format("DD MMM YYYY")}`;
+      return `Retailers on ${singleDate.format("DD MMM YYYY")}`;
     }
     return "All Expenses";
   };
 
-  const dateFilteredExpenses = getFilteredExpenses(expenseRecord);
-  const tableExpenses = getSearchedExpenses(dateFilteredExpenses);
-  const stats = computeStats(dateFilteredExpenses);
+  const dateFilteredRetailers = getFilteredRetailers(retailRecord);
+  const tableRetailers = getSearchedRetailer(dateFilteredRetailers);
+  const stats = computeStats(dateFilteredRetailers);
 
   const columns = [
     { title: "ID", dataIndex: "id", key: "id" },
-    { title: "Description", dataIndex: "description", key: "description" },
+    { title: "Business Name", dataIndex: "businessName", key: "businessName" },
+    { title: "Email", dataIndex:"email", key: "email"},
+    { title: "Phone", dataIndex:"phone", key: "phone"},
+    { title: "Credit Limit", dataIndex:"creditLimit", key: "creditLimit"},
     {
-      title: "Amount",
-      dataIndex: "amount",
-      key: "amount",
+      title: "Balance",
+      dataIndex: "balance",
+      key: "balance",
       render: (amount) => `₦${amount.toLocaleString()}`,
     },
-    { title: "Recorded By", dataIndex: "recordedBy", key: "recordedBy" },
+    { title: "Address", dataIndex: "address", key: "address" },
     { title: "Branch", dataIndex: "branch", key: "branch" },
     {
       title: "Date",
@@ -211,10 +224,10 @@ const ExpensesPage = () => {
         <Row justify="space-between" align="middle" wrap>
           <Col>
             <Title level={3} style={{ margin: 0 }}>
-              Expenses
+              Retailers
             </Title>
             <Text type="secondary">
-              Track and record business expenses.
+              Track and record business retailers.
             </Text>
           </Col>
           <Col>
@@ -297,7 +310,7 @@ const ExpensesPage = () => {
         <Row>
           <Card title="Recorded Expenses" variant="plain" style={{ width: "100%" }}>
             <Table
-              dataSource={tableExpenses}
+              dataSource={tableRetailers}
               columns={columns}
               pagination={false}
               scroll={{ x: true }}
@@ -316,7 +329,7 @@ const ExpensesPage = () => {
         }}
         footer={null}
       >
-        <Form form={form} layout="vertical" onFinish={handleCreateExpense}>
+        <Form form={form} layout="vertical" onFinish={handleAddRetailer}>
           <Form.Item
             label="Description"
             name="description"
@@ -348,4 +361,4 @@ const ExpensesPage = () => {
   );
 };
 
-export default ExpensesPage;
+export default RetailersPage;
