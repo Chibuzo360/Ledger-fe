@@ -20,6 +20,7 @@ import {
   Descriptions,
   DatePicker,
   Segmented,
+  Select,
 } from "antd";
 import { DownOutlined, MoreOutlined, PlusOutlined } from "@ant-design/icons";
 import { useAuth } from "../context/AuthContext";
@@ -53,6 +54,7 @@ const TransactionsPage = () => {
   ];
 
   const [transactionRecord, setTransactionRecord] = useState([]);
+  const [retailers, setRetailers] = useState([]);
   const [filterDate, setFilterDate] = useState(currentDayDate());
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState(null);
@@ -103,7 +105,9 @@ const TransactionsPage = () => {
     if (searchFieldKey) {
       const fieldKey = SEARCH_FIELD_MAP[searchFieldKey].key;
       return transactions.filter((t) =>
-        String(t[fieldKey] ?? "").toLowerCase().includes(text),
+        String(t[fieldKey] ?? "")
+          .toLowerCase()
+          .includes(text),
       );
     }
 
@@ -194,8 +198,37 @@ const TransactionsPage = () => {
     }
   };
 
+  const fetchRetailers = async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const response = await api.get("/retailers") ;
+      const mapped = response.data.map((retailer) => ({
+        key: retailer.id,
+        id: retailer.id,
+        businessName: retailer.businessName,
+        contactName: retailer.contactName,
+        phone: retailer.phone,
+        creditLimit: retailer.creditLimit,
+        balance: retailer.balance,
+        branch: retailer.branch,
+        createdAt: retailer.createdAt,
+      }));
+      setRetailers(mapped);
+    } catch (error) {
+      if (!error.response) {
+        setErrorMsg("Can't reach the server. Is the backend running?");
+      } else {
+        setErrorMsg(`Server error: ${error.response.status}`);
+      }
+    }finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchTransactions();
+    fetchRetailers();
   }, []);
 
   const handleCreateTransaction = async (values) => {
@@ -207,6 +240,7 @@ const TransactionsPage = () => {
         totalAmount: values.totalAmount,
         amountPaid: values.amountPaid,
         paymentStatus: values.alreadyConfirmed ? "confirmed" : undefined,
+        retailer: values.retailerId ?{id: values.retailerId} : null,
       });
       message.success("Transaction recorded!");
       form.resetFields();
@@ -553,6 +587,20 @@ const TransactionsPage = () => {
         footer={null}
       >
         <Form form={form} layout="vertical" onFinish={handleCreateTransaction}>
+
+          <Form.Item
+          name="retailerId"
+          label = "Retailer (Optional)"
+          >
+            <Select
+                showSearch 
+                optionFilterProp= "label"
+                placeholder = "Find Retailer"
+                allowClear 
+                options={retailers.map((r) => ({ value: r.id, label: r.businessName }))}/>
+
+          </Form.Item>
+
           <Form.Item
             label="Customer Name"
             name="customerName"
