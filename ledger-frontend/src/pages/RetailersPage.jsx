@@ -74,11 +74,16 @@ const RetailersPage = () => {
   // Amount Owed = money the retailer owes us. Derived, not stored — same
   // pattern as the dashboard stats. Sums (totalAmount - amountPaid) across
   // every transaction linked to this retailer.
+
   const getAmountOwed = (retailerId) => {
     return allTransactions
       .filter((t) => t.retailer?.id === retailerId)
       .reduce((sum, t) => sum + (t.totalAmount - t.amountPaid), 0);
   };
+
+  const getAvailableCredit = (retailer)=>{
+      return retailer.creditLimit-getAmountOwed(retailer.id)
+  }
 
   const handleAddRetailer = async (values) => {
     setSubmitting(true);
@@ -137,6 +142,7 @@ const RetailersPage = () => {
         : item.product?.name ?? "Unknown product";
 
       const owedQty = item.quantityOrdered - item.quantitySupplied;
+      const owedQtyValue = owedQty * (item.productVariant?.pricePerUnit?? item.product?.pricePerUnit?? 0)
       grouped[label] = (grouped[label] || 0) + owedQty;
     });
 
@@ -156,6 +162,19 @@ const RetailersPage = () => {
       dataIndex: "creditLimit",
       key: "creditLimit",
       render: (val) => `₦${(val ?? 0).toLocaleString()}`,
+    },
+    // this column should warn in the future when credit limit is exceeded
+    {
+      title: "Available Credit",
+      dataIndex: "availableCredit",
+      render: (_,record) =>{
+        const available = getAvailableCredit(record);
+        return(
+          <Text type={available < 0 ? "danger" : "undefined"}>
+            ₦{available.toLocaleString()}
+          </Text>
+        )
+      },
     },
     {
       title: "Amount Owed",
