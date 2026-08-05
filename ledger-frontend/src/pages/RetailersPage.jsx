@@ -77,7 +77,7 @@ const RetailersPage = () => {
 
   const getAmountOwed = (retailerId) => {
     return allTransactions
-      .filter((t) => t.retailer?.id === retailerId)
+      .filter((t) => t.retailer?.id === retailerId)//this callback function takes the all txns and filters it by to only the ones that has their retailerid = the retailer id passed to the function initially
       .reduce((sum, t) => sum + (t.totalAmount - t.amountPaid), 0);
   };
 
@@ -137,16 +137,16 @@ const RetailersPage = () => {
 
     const grouped = {};
     outstanding.forEach((item) => {
-      const label = item.productVariant
+      const label = item.productVariant 
         ? `${item.product?.name ?? "Unknown"} (${item.productVariant.size ?? ""} ${item.productVariant.producer ?? ""})`.trim()
         : item.product?.name ?? "Unknown product";
 
       const owedQty = item.quantityOrdered - item.quantitySupplied;
       const owedQtyValue = owedQty * (item.productVariant?.pricePerUnit?? item.product?.pricePerUnit?? 0)
-      grouped[label] = (grouped[label] || 0) + owedQty;
+      grouped[label] = (grouped[label] || 0) + owedQty + owedQtyValue ;// I thoght grouped was defined as an object, why does this work here.
     });
 
-    return Object.entries(grouped).map(([label, qty]) => ({ label, qty }));
+    return Object.entries(grouped).map(([label, qty, qytValue]) => ({ label, qty, qytValue }));
   };
 
   const retailerTransactions = selectedRetailer

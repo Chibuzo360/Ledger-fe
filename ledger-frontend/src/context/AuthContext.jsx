@@ -5,6 +5,7 @@ const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   // 2. Initialize State lazily from localStorage so page refreshes don't log users out
+  // i might later change this to session storage or cookie
   const [token, setToken] = useState(() => {
     return localStorage.getItem('token') || null; 
   });
