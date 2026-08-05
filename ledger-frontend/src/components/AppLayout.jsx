@@ -32,6 +32,10 @@ const AppLayout = () => {
       key: '4',
       label: <Link to="/retailers">Retailers</Link>,
     },
+    {
+      key: '5',
+      label: <Link to="/product">Products</Link>,
+    }
     // We will add more links (Products, Stock In, etc.) as we build them
   ];
 

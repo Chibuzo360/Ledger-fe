@@ -77,13 +77,13 @@ const RetailersPage = () => {
 
   const getAmountOwed = (retailerId) => {
     return allTransactions
-      .filter((t) => t.retailer?.id === retailerId)//this callback function takes the all txns and filters it by to only the ones that has their retailerid = the retailer id passed to the function initially
+      .filter((t) => t.retailer?.id === retailerId) //this callback function takes the all txns and filters it by to only the ones that has their retailerid = the retailer id passed to the function initially
       .reduce((sum, t) => sum + (t.totalAmount - t.amountPaid), 0);
   };
 
-  const getAvailableCredit = (retailer)=>{
-      return retailer.creditLimit-getAmountOwed(retailer.id)
-  }
+  const getAvailableCredit = (retailer) => {
+    return retailer.creditLimit - getAmountOwed(retailer.id);
+  };
 
   const handleAddRetailer = async (values) => {
     setSubmitting(true);
@@ -118,7 +118,9 @@ const RetailersPage = () => {
     setIsDetailsOpen(true);
     setDetailsLoading(true);
     try {
-      const response = await api.get(`/transaction_item/retailer/${retailer.id}`);
+      const response = await api.get(
+        `/transaction_item/retailer/${retailer.id}`,
+      );
       setRetailerItems(response.data);
     } catch (error) {
       message.error("Couldn't load this retailer's item history.");
@@ -137,16 +139,26 @@ const RetailersPage = () => {
 
     const grouped = {};
     outstanding.forEach((item) => {
-      const label = item.productVariant 
+      const label = item.productVariant
         ? `${item.product?.name ?? "Unknown"} (${item.productVariant.size ?? ""} ${item.productVariant.producer ?? ""})`.trim()
-        : item.product?.name ?? "Unknown product";
+        : (item.product?.name ?? "Unknown product");
 
       const owedQty = item.quantityOrdered - item.quantitySupplied;
-      const owedQtyValue = owedQty * (item.productVariant?.pricePerUnit?? item.product?.pricePerUnit?? 0)
-      grouped[label] = (grouped[label] || 0) + owedQty + owedQtyValue ;// I thoght grouped was defined as an object, why does this work here.
+      const owedQtyValue =
+        owedQty *
+        (item.productVariant?.pricePerUnit ?? item.product?.pricePerUnit ?? 0);
+
+      if (!grouped[label]) {
+        grouped[label] = { qty: 0, value: 0 };
+      }
+      grouped[label].qty += owedQty;
+      grouped[label].value += owedQtyValue;
     });
 
-    return Object.entries(grouped).map(([label, qty, qytValue]) => ({ label, qty, qytValue }));
+    return Object.entries(grouped).map(([label, totals]) => ({
+      qty: totals.qty,
+      value: totals.value,
+    }));
   };
 
   const retailerTransactions = selectedRetailer
@@ -167,13 +179,13 @@ const RetailersPage = () => {
     {
       title: "Available Credit",
       dataIndex: "availableCredit",
-      render: (_,record) =>{
+      render: (_, record) => {
         const available = getAvailableCredit(record);
-        return(
+        return (
           <Text type={available < 0 ? "danger" : "undefined"}>
             ₦{available.toLocaleString()}
           </Text>
-        )
+        );
       },
     },
     {
@@ -300,7 +312,11 @@ const RetailersPage = () => {
           </Form.Item>
 
           <Form.Item label="Credit Limit (₦)" name="creditLimit">
-            <InputNumber min={0} style={{ width: "100%" }} placeholder="e.g. 500000" />
+            <InputNumber
+              min={0}
+              style={{ width: "100%" }}
+              placeholder="e.g. 500000"
+            />
           </Form.Item>
 
           <Form.Item>
@@ -345,12 +361,15 @@ const RetailersPage = () => {
             {detailsLoading ? (
               <Text type="secondary">Loading...</Text>
             ) : getProductOwedSummary().length === 0 ? (
-              <Text type="secondary">Nothing outstanding — fully delivered.</Text>
+              <Text type="secondary">
+                Nothing outstanding — fully delivered.
+              </Text>
             ) : (
               <ul>
                 {getProductOwedSummary().map((row) => (
                   <li key={row.label}>
-                    {row.label}: <b>{row.qty}</b> owed
+                    {row.label}: <b>{row.qty}</b> owed (₦
+                    {row.value.toLocaleString()})
                   </li>
                 ))}
               </ul>
@@ -358,7 +377,10 @@ const RetailersPage = () => {
 
             <Divider orientation="left">Transaction History</Divider>
             <Table
-              dataSource={retailerTransactions.map((t) => ({ ...t, key: t.id }))}
+              dataSource={retailerTransactions.map((t) => ({
+                ...t,
+                key: t.id,
+              }))}
               columns={transactionColumns}
               pagination={false}
               scroll={{ x: true }}

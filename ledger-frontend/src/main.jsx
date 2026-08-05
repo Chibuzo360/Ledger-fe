@@ -10,6 +10,7 @@ import RegisterPage from './pages/RegistrationPage';
 import TransactionsPage from './pages/TransactionsPage';
 import ExpensesPage from './pages/ExpensesPage';
 import RetailersPage from './pages/RetailersPage';
+import ProductPage from './pages/ProductPage';
 
 // import './index.css'; 
 
@@ -24,6 +25,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
           {/* Public Route - Using your real LoginPage component now! */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} /> 
+          <Route path='/product' element={<ProductPage/>}/>
 
           {/* Protected Routes */}
           <Route
