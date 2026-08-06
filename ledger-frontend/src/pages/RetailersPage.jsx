@@ -156,6 +156,7 @@ const RetailersPage = () => {
     });
 
     return Object.entries(grouped).map(([label, totals]) => ({
+      label,
       qty: totals.qty,
       value: totals.value,
     }));
