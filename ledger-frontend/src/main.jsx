@@ -25,7 +25,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
           {/* Public Route - Using your real LoginPage component now! */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} /> 
-          <Route path='/product' element={<ProductPage/>}/>
+          
 
           {/* Protected Routes */}
           <Route
@@ -39,6 +39,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
             <Route path='/transactions' element={<TransactionsPage/>} />
             <Route path='/expenses' element={<ExpensesPage/>} />
             <Route path='/retailers' element={<RetailersPage/>} />
+            <Route path='/product' element={<ProductPage/>}/>
           </Route>
           
           {/* Root redirect: Send users to /dashboard by default */}
