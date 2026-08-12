@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
+  Row,
+  Col,
+  Card,
   Table,
   Button,
   Modal,
@@ -18,8 +21,6 @@ import { useAuth } from "../context/AuthContext";
 
 const { Title, Text } = Typography;
 
-// Sentinel value used in the category <Select> to represent "create this as
-// a new category" instead of picking an existing one.
 const CREATE_NEW_VALUE = "__create_new__";
 
 export default function ProductPage() {
@@ -30,27 +31,26 @@ export default function ProductPage() {
   const [variants, setVariants] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null); // NEW: matches error-banner pattern used on other pages
 
-  // --- Add/Edit Product modal ---
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [productForm] = Form.useForm();
   const [categorySearch, setCategorySearch] = useState("");
 
-  // --- Add/Edit Variant modal ---
   const [variantModalOpen, setVariantModalOpen] = useState(false);
   const [editingVariant, setEditingVariant] = useState(null);
   const [variantParentProduct, setVariantParentProduct] = useState(null);
+  const [hasVariant, setHasVariant] = useState(false)
   const [variantForm] = Form.useForm();
 
-  // --- Director-only stock edit modal ---
   const [stockModalOpen, setStockModalOpen] = useState(false);
-  const [stockTarget, setStockTarget] = useState(null); // { type: 'product' | 'variant', record }
+  const [stockTarget, setStockTarget] = useState(null);
   const [stockForm] = Form.useForm();
 
   const fetchAll = async () => {
     setLoading(true);
+    setErrorMsg(null);
     try {
       const [productsRes, variantsRes, categoriesRes] = await Promise.all([
         api.get("/products"),
@@ -61,14 +61,14 @@ export default function ProductPage() {
       setVariants(variantsRes.data);
       setCategories(categoriesRes.data);
     } catch (error) {
+      // CHANGED: correct error copy for a fetch failure, not a save failure
       if (!error.response) {
-        message.error("Can't reach the server.");
+        setErrorMsg("Can't reach the server. Is the backend running?");
       } else {
-        message.error(`Failed to save: ${error.response.status}`);
+        setErrorMsg(`Server error: ${error.response.status}`);
       }
     } finally {
-      setSubmitting(false);
-      setLoading(false);
+      setLoading(false); // CHANGED: removed the stray setSubmitting(false) that didn't belong here
     }
   };
 
@@ -76,13 +76,6 @@ export default function ProductPage() {
     fetchAll();
   }, []);
 
-  // ---------------------------------------------------------------------
-  // Grouping: the backend gives us flat products and flat variants
-  // separately. We attach each variant to its parent product (matching on
-  // variant.product.id), then bucket products by category name so we can
-  // render one table per category. Products with no category fall into
-  // "Uncategorized" rather than being dropped.
-  // ---------------------------------------------------------------------
   const groupedByCategory = useMemo(() => {
     const groups = {};
     products.forEach((product) => {
@@ -99,14 +92,18 @@ export default function ProductPage() {
     return groups;
   }, [products, variants]);
 
-  // ---------------------------------------------------------------------
-  // Category <Select> options, with inline "create new" support.
-  // If the user's search text doesn't match an existing category name,
-  // we append a synthetic option for creating it on the fly.
-  // ---------------------------------------------------------------------
+  // CHANGED: now actually filters existing categories by the typed search
+  // text (case-insensitive substring match), instead of always returning
+  // every category regardless of what's typed. The "+ Create" option still
+  // only appears when there's no exact existing match.
   const categoryOptions = useMemo(() => {
-    const base = categories.map((c) => ({ label: c.name, value: c.id }));
     const search = categorySearch.trim();
+    const filtered = search
+      ? categories.filter((c) =>
+          c.name.toLowerCase().includes(search.toLowerCase()),
+        )
+      : categories;
+    const base = filtered.map((c) => ({ label: c.name, value: c.id }));
     const alreadyExists = categories.some(
       (c) => c.name.toLowerCase() === search.toLowerCase(),
     );
@@ -116,9 +113,6 @@ export default function ProductPage() {
     return base;
   }, [categories, categorySearch]);
 
-  // ---------------------------------------------------------------------
-  // Product modal handlers
-  // ---------------------------------------------------------------------
   const openAddProduct = () => {
     setEditingProduct(null);
     productForm.resetFields();
@@ -144,8 +138,6 @@ export default function ProductPage() {
       const values = await productForm.validateFields();
       let categoryId = values.categoryId;
 
-      // If the user picked the synthetic "create new" option, create the
-      // category first, then use its real id in the product payload.
       if (categoryId === CREATE_NEW_VALUE) {
         const created = await api.post("/categories", {
           name: categorySearch.trim(),
@@ -172,7 +164,7 @@ export default function ProductPage() {
       setProductModalOpen(false);
       fetchAll();
     } catch (err) {
-      if (err?.errorFields) return; // antd form validation error, already shown inline
+      if (err?.errorFields) return;
       message.error("Failed to save product.");
     }
   };
@@ -187,9 +179,6 @@ export default function ProductPage() {
     }
   };
 
-  // ---------------------------------------------------------------------
-  // Variant modal handlers
-  // ---------------------------------------------------------------------
   const openAddVariant = (product) => {
     setEditingVariant(null);
     setVariantParentProduct(product);
@@ -242,17 +231,6 @@ export default function ProductPage() {
     }
   };
 
-  // ---------------------------------------------------------------------
-  // Stock edit modal (director only). Reuses the product/variant edit
-  // endpoints rather than a dedicated one, since none exists yet.
-  //
-  // KNOWN GAP: there's no backend field/table to persist `reason` yet
-  // (no StockAdjustment entity, no audit log). It's included in the PUT
-  // body below so it's visible in the request and easy to wire up once
-  // the backend has somewhere to put it, but until then Spring will just
-  // ignore the unknown field silently. Flagging this rather than pretending
-  // it's fully wired end-to-end.
-  // ---------------------------------------------------------------------
   const openStockEdit = (type, record) => {
     setStockTarget({ type, record });
     stockForm.resetFields();
@@ -272,7 +250,7 @@ export default function ProductPage() {
           pricePerUnit: record.pricePerUnit,
           currentStock: values.currentStock,
           category: record.category ? { id: record.category.id } : null,
-          stockEditReason: values.reason, // see KNOWN GAP note above
+          stockEditReason: values.reason, // KNOWN GAP: no backend column yet, silently ignored until StockAdjustment entity exists
         });
       } else {
         await api.put(`/product-variants/${record.id}`, {
@@ -281,7 +259,7 @@ export default function ProductPage() {
           pricePerUnit: record.pricePerUnit,
           currentStock: values.currentStock,
           product: { id: record.product.id },
-          stockEditReason: values.reason, // see KNOWN GAP note above
+          stockEditReason: values.reason, // KNOWN GAP: same as above
         });
       }
       message.success("Stock updated.");
@@ -293,9 +271,6 @@ export default function ProductPage() {
     }
   };
 
-  // ---------------------------------------------------------------------
-  // Table column definitions
-  // ---------------------------------------------------------------------
   const variantColumns = [
     { title: "Size", dataIndex: "size", key: "size" },
     { title: "Producer", dataIndex: "producer", key: "producer" },
@@ -311,26 +286,16 @@ export default function ProductPage() {
       key: "actions",
       render: (_, record) => (
         <Space>
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => openEditVariant(record)}
-          >
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEditVariant(record)}>
             Edit
           </Button>
           {isDirector && (
-            <Button
-              size="small"
-              onClick={() => openStockEdit("variant", record)}
-            >
+            <Button size="small" onClick={() => openStockEdit("variant", record)}>
               Edit Stock
             </Button>
           )}
           {isDirector && (
-            <Popconfirm
-              title="Delete this variant?"
-              onConfirm={() => handleDeleteVariant(record.id)}
-            >
+            <Popconfirm title="Delete this variant?" onConfirm={() => handleDeleteVariant(record.id)}>
               <Button size="small" danger icon={<DeleteOutlined />} />
             </Popconfirm>
           )}
@@ -367,29 +332,19 @@ export default function ProductPage() {
       key: "actions",
       render: (_, record) => (
         <Space wrap>
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => openEditProduct(record)}
-          >
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEditProduct(record)}>
             Edit
           </Button>
           <Button size="small" onClick={() => openAddVariant(record)}>
             Add Variant
           </Button>
           {isDirector && record.variants.length === 0 && (
-            <Button
-              size="small"
-              onClick={() => openStockEdit("product", record)}
-            >
+            <Button size="small" onClick={() => openStockEdit("product", record)}>
               Edit Stock
             </Button>
           )}
           {isDirector && (
-            <Popconfirm
-              title="Delete this product?"
-              onConfirm={() => handleDeleteProduct(record.id)}
-            >
+            <Popconfirm title="Delete this product?" onConfirm={() => handleDeleteProduct(record.id)}>
               <Button size="small" danger icon={<DeleteOutlined />} />
             </Popconfirm>
           )}
@@ -401,50 +356,51 @@ export default function ProductPage() {
   const expandableConfig = {
     rowExpandable: (record) => record.variants.length > 0,
     expandedRowRender: (record) => (
-      <Table
-        columns={variantColumns}
-        dataSource={record.variants}
-        rowKey="id"
-        pagination={false}
-      />
+      <Table columns={variantColumns} dataSource={record.variants} rowKey="id" pagination={false} />
     ),
   };
 
+  // CHANGED: entire return block restructured to match the padding/Space/
+  // Row-header/Card pattern used on TransactionsPage, ExpensesPage, and
+  // RetailersPage — was plain <div>s before.
   return (
-    <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 16,
-        }}
-      >
-        <Title level={3} style={{ margin: 0 }}>
-          Products
-        </Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openAddProduct}>
-          Add Product
-        </Button>
-      </div>
+    <div style={{ padding: "16px" }}>
+      <Space orientation="vertical" size="large" style={{ width: "100%" }}>
+        <Row justify="space-between" align="middle" wrap>
+          <Col>
+            <Title level={3} style={{ margin: 0 }}>
+              Products
+            </Title>
+            <Text type="secondary">
+              Manage your product catalog, categories, and variants.
+            </Text>
+          </Col>
+          <Col>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openAddProduct}>
+              Add Product
+            </Button>
+          </Col>
+        </Row>
 
-      {Object.entries(groupedByCategory).map(
-        ([categoryName, categoryProducts]) => (
-          <div key={categoryName} style={{ marginBottom: 32 }}>
-            <Title level={5}>{categoryName}</Title>
-            <Table
-              columns={productColumns}
-              dataSource={categoryProducts}
-              rowKey="id"
-              loading={loading}
-              pagination={false}
-              expandable={expandableConfig}
-            />
-          </div>
-        ),
-      )}
+        {errorMsg && <Text type="danger">{errorMsg}</Text>}
 
-      {/* Add/Edit Product modal */}
+        {Object.entries(groupedByCategory).map(([categoryName, categoryProducts]) => (
+          <Row key={categoryName}>
+            <Card title={categoryName} variant="plain" style={{ width: "100%" }}>
+              <Table
+                columns={productColumns}
+                dataSource={categoryProducts}
+                rowKey="id"
+                loading={loading}
+                pagination={false}
+                scroll={{ x: true }}
+                expandable={expandableConfig}
+              />
+            </Card>
+          </Row>
+        ))}
+      </Space>
+
       <Modal
         title={editingProduct ? "Edit Product" : "Add Product"}
         open={productModalOpen}
@@ -453,11 +409,7 @@ export default function ProductPage() {
         destroyOnClose
       >
         <Form form={productForm} layout="vertical">
-          <Form.Item
-            name="name"
-            label="Product Name"
-            rules={[{ required: true }]}
-          >
+          <Form.Item name="name" label="Product Name" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
           <Form.Item name="unit" label="Unit" rules={[{ required: true }]}>
@@ -493,13 +445,8 @@ export default function ProductPage() {
         </Form>
       </Modal>
 
-      {/* Add/Edit Variant modal */}
       <Modal
-        title={
-          editingVariant
-            ? `Edit Variant — ${variantParentProduct?.name ?? ""}`
-            : `Add Variant — ${variantParentProduct?.name ?? ""}`
-        }
+        title={editingVariant ? `Edit Variant — ${variantParentProduct?.name ?? ""}` : `Add Variant — ${variantParentProduct?.name ?? ""}`}
         open={variantModalOpen}
         onOk={handleVariantSubmit}
         onCancel={() => setVariantModalOpen(false)}
@@ -512,53 +459,32 @@ export default function ProductPage() {
           <Form.Item name="producer" label="Producer">
             <Input placeholder="e.g. Portobello, Dangote" />
           </Form.Item>
-          <Form.Item
-            name="pricePerUnit"
-            label="Price Per Unit"
-            rules={[{ required: true }]}
-          >
+          <Form.Item name="pricePerUnit" label="Price Per Unit" rules={[{ required: false }]}>
             <InputNumber style={{ width: "100%" }} min={0} prefix="₦" />
           </Form.Item>
-          <Form.Item
-            name="currentStock"
-            label="Current Stock"
-            rules={[{ required: true }]}
-          >
+          <Form.Item name="currentStock" label="Current Stock" rules={[{ required: false }]}>
             <InputNumber style={{ width: "100%" }} min={0} />
           </Form.Item>
         </Form>
       </Modal>
 
-      {/* Director-only stock edit modal */}
       <Modal
         title="Edit Stock"
         open={stockModalOpen}
         onOk={handleStockSubmit}
         onCancel={() => setStockModalOpen(false)}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={stockForm} layout="vertical">
-          <Form.Item
-            name="currentStock"
-            label="New Stock Value"
-            rules={[{ required: true }]}
-          >
+          <Form.Item name="currentStock" label="New Stock Value" rules={[{ required: true }]}>
             <InputNumber style={{ width: "100%" }} min={0} />
           </Form.Item>
           <Form.Item
             name="reason"
             label="Reason for adjustment"
-            rules={[
-              {
-                required: true,
-                message: "A reason is required for manual stock edits.",
-              },
-            ]}
+            rules={[{ required: true, message: "A reason is required for manual stock edits." }]}
           >
-            <Input.TextArea
-              rows={3}
-              placeholder="e.g. customer return, recount correction, damaged goods"
-            />
+            <Input.TextArea rows={3} placeholder="e.g. customer return, recount correction, damaged goods" />
           </Form.Item>
         </Form>
       </Modal>
