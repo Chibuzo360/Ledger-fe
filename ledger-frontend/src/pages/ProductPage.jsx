@@ -31,7 +31,7 @@ export default function ProductPage() {
   const [variants, setVariants] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState(null); // NEW: matches error-banner pattern used on other pages
+  const [errorMsg, setErrorMsg] = useState(null);
 
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
@@ -41,7 +41,6 @@ export default function ProductPage() {
   const [variantModalOpen, setVariantModalOpen] = useState(false);
   const [editingVariant, setEditingVariant] = useState(null);
   const [variantParentProduct, setVariantParentProduct] = useState(null);
-  const [hasVariant, setHasVariant] = useState(false)
   const [variantForm] = Form.useForm();
 
   const [stockModalOpen, setStockModalOpen] = useState(false);
@@ -61,14 +60,13 @@ export default function ProductPage() {
       setVariants(variantsRes.data);
       setCategories(categoriesRes.data);
     } catch (error) {
-      // CHANGED: correct error copy for a fetch failure, not a save failure
       if (!error.response) {
         setErrorMsg("Can't reach the server. Is the backend running?");
       } else {
         setErrorMsg(`Server error: ${error.response.status}`);
       }
     } finally {
-      setLoading(false); // CHANGED: removed the stray setSubmitting(false) that didn't belong here
+      setLoading(false);
     }
   };
 
@@ -92,10 +90,6 @@ export default function ProductPage() {
     return groups;
   }, [products, variants]);
 
-  // CHANGED: now actually filters existing categories by the typed search
-  // text (case-insensitive substring match), instead of always returning
-  // every category regardless of what's typed. The "+ Create" option still
-  // only appears when there's no exact existing match.
   const categoryOptions = useMemo(() => {
     const search = categorySearch.trim();
     const filtered = search
@@ -250,7 +244,7 @@ export default function ProductPage() {
           pricePerUnit: record.pricePerUnit,
           currentStock: values.currentStock,
           category: record.category ? { id: record.category.id } : null,
-          stockEditReason: values.reason, // KNOWN GAP: no backend column yet, silently ignored until StockAdjustment entity exists
+          stockEditReason: values.reason, // KNOWN GAP: no backend column yet
         });
       } else {
         await api.put(`/product-variants/${record.id}`, {
@@ -295,7 +289,11 @@ export default function ProductPage() {
             </Button>
           )}
           {isDirector && (
-            <Popconfirm title="Delete this variant?" onConfirm={() => handleDeleteVariant(record.id)}>
+            <Popconfirm
+              title="Delete this variant?"
+              description="This cannot be undone."
+              onConfirm={() => handleDeleteVariant(record.id)}
+            >
               <Button size="small" danger icon={<DeleteOutlined />} />
             </Popconfirm>
           )}
@@ -343,8 +341,21 @@ export default function ProductPage() {
               Edit Stock
             </Button>
           )}
+          {/* CHANGED: confirmation message now warns specifically when
+              the product has variants attached, since deleting it in
+              that case may leave those variants in an undefined state
+              (behavior depends on the backend FK setup, which hasn't
+              been confirmed yet — see chat notes). */}
           {isDirector && (
-            <Popconfirm title="Delete this product?" onConfirm={() => handleDeleteProduct(record.id)}>
+            <Popconfirm
+              title="Delete this product?"
+              description={
+                record.variants.length > 0
+                  ? `This product has ${record.variants.length} variant(s) attached. Deleting it may affect them. Are you sure?`
+                  : "This cannot be undone."
+              }
+              onConfirm={() => handleDeleteProduct(record.id)}
+            >
               <Button size="small" danger icon={<DeleteOutlined />} />
             </Popconfirm>
           )}
@@ -360,9 +371,6 @@ export default function ProductPage() {
     ),
   };
 
-  // CHANGED: entire return block restructured to match the padding/Space/
-  // Row-header/Card pattern used on TransactionsPage, ExpensesPage, and
-  // RetailersPage — was plain <div>s before.
   return (
     <div style={{ padding: "16px" }}>
       <Space orientation="vertical" size="large" style={{ width: "100%" }}>
@@ -429,7 +437,7 @@ export default function ProductPage() {
           <Form.Item
             name="pricePerUnit"
             label="Price Per Unit"
-            rules={[{ required: true }]}
+            rules={[{ required: false }]}
             tooltip="Only used if this product has no variants. Variants each have their own price."
           >
             <InputNumber style={{ width: "100%" }} min={0} prefix="₦" />
@@ -459,10 +467,10 @@ export default function ProductPage() {
           <Form.Item name="producer" label="Producer">
             <Input placeholder="e.g. Portobello, Dangote" />
           </Form.Item>
-          <Form.Item name="pricePerUnit" label="Price Per Unit" rules={[{ required: false }]}>
+          <Form.Item name="pricePerUnit" label="Price Per Unit" rules={[{ required: true }]}>
             <InputNumber style={{ width: "100%" }} min={0} prefix="₦" />
           </Form.Item>
-          <Form.Item name="currentStock" label="Current Stock" rules={[{ required: false }]}>
+          <Form.Item name="currentStock" label="Current Stock" rules={[{ required: true }]}>
             <InputNumber style={{ width: "100%" }} min={0} />
           </Form.Item>
         </Form>
@@ -473,7 +481,7 @@ export default function ProductPage() {
         open={stockModalOpen}
         onOk={handleStockSubmit}
         onCancel={() => setStockModalOpen(false)}
-        destroyOnHidden
+        destroyOnClose
       >
         <Form form={stockForm} layout="vertical">
           <Form.Item name="currentStock" label="New Stock Value" rules={[{ required: true }]}>
