@@ -32,6 +32,7 @@ export default function ProductPage() {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
+  const [hasVariant, setHadVariant] = useState(false);
 
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
@@ -76,17 +77,23 @@ export default function ProductPage() {
 
   const groupedByCategory = useMemo(() => {
     const groups = {};
+    // each product should have a category name chosen based on the given conditions and a productVariant name with the consditions.
+    // recall that the product have been previously set to the response data of "/products" when we called through the api
+
     products.forEach((product) => {
       const categoryName = product.category
         ? product.category.name
-        : "Uncategorized";
+        : "Uncategorized"; 
       const productVariants = variants.filter(
         (v) => v.product && v.product.id === product.id,
       );
+      // putting product and variants in the an object,"row". Products already has its own value(from the "for each line").
       const row = { ...product, variants: productVariants };
       if (!groups[categoryName]) groups[categoryName] = [];
       groups[categoryName].push(row);
     });
+
+
     return groups;
   }, [products, variants]);
 
