@@ -14,6 +14,8 @@ import {
   Space,
   Typography,
   Popconfirm,
+  Tooltip, // NEW: used to explain the disabled delete button
+  Empty, // NEW: empty state when there are no products yet
 } from "antd";
 import { PlusOutlined, EditOutlined, DeleteOutlined } from "@ant-design/icons";
 import api from "../api/axiosConfig";
@@ -32,7 +34,11 @@ export default function ProductPage() {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
-  const [hasVariant, setHadVariant] = useState(false);
+  // CHANGED: hasVariant/setHadVariant removed — it was declared but never
+  // read anywhere. Each row already carries its own `variants` array (see
+  // groupedByCategory below), so `record.variants.length > 0` is the single
+  // source of truth for "does this product have variants" — no separate
+  // piece of state needed, and no risk of it going stale.
 
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
@@ -170,13 +176,43 @@ export default function ProductPage() {
     }
   };
 
-  const handleDeleteProduct = async (id) => {
+  const handleDeleteProduct = async (record) => {
+    // CHANGED: guard duplicated here (not just in the button render below).
+    // The button already prevents this via `disabled`, but this function is
+    // the actual thing that talks to the backend — if it's ever called from
+    // somewhere else later, or `record.variants` is stale for any reason,
+    // this stops the request before it's sent rather than relying only on
+    // the UI having rendered correctly.
+    if (record.variants.length > 0) {
+      message.error("Delete this product's variants first, then delete the product.");
+      return;
+    }
     try {
-      await api.delete(`/products/${id}`);
+      await api.delete(`/products/${record.id}`);
       message.success("Product deleted.");
       fetchAll();
     } catch (err) {
-      message.error("Failed to delete product.");
+      // CHANGED: branch on the response instead of one generic message,
+      // same pattern LoginPage already uses (no response vs. specific
+      // status vs. everything else). This is what actually surfaces the
+      // backend's new 409 check to the person clicking the button —
+      // without this, a real "variants exist" rejection and a dead
+      // backend look identical to the director.
+      if (!err.response) {
+        message.error("Can't reach the server. Is the backend running?");
+      } else if (err.response.status === 409) {
+        // Backend's ResponseStatusException message, when present, is the
+        // most accurate text we can show ("...active Variants."). Falling
+        // back to a hardcoded string only if the body doesn't have one.
+        message.error(
+          err.response.data?.message ||
+            "This product still has variants attached — delete those first."
+        );
+      } else if (err.response.status === 403) {
+        message.error("Only a director can delete a product.");
+      } else {
+        message.error("Failed to delete product.");
+      }
     }
   };
 
@@ -273,8 +309,9 @@ export default function ProductPage() {
   };
 
   const variantColumns = [
-    { title: "Size", dataIndex: "size", key: "size" },
+    // CHANGED: Producer moved to the first (leftmost) column, per request.
     { title: "Producer", dataIndex: "producer", key: "producer" },
+    { title: "Size", dataIndex: "size", key: "size" },
     {
       title: "Price",
       dataIndex: "pricePerUnit",
@@ -335,44 +372,54 @@ export default function ProductPage() {
     {
       title: "Actions",
       key: "actions",
+      // CHANGED: wrapped in a div with stopPropagation, because expandRowByClick
+      // (added below) makes the whole <tr> clickable to expand/collapse variants.
+      // Without this, clicking any action button (Edit, Delete, etc.) would also
+      // toggle the row's expand state as the click bubbles up — e.g. clicking
+      // "Edit" would open the modal AND expand/collapse the row at once.
       render: (_, record) => (
-        <Space wrap>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEditProduct(record)}>
-            Edit
-          </Button>
-          <Button size="small" onClick={() => openAddVariant(record)}>
-            Add Variant
-          </Button>
-          {isDirector && record.variants.length === 0 && (
-            <Button size="small" onClick={() => openStockEdit("product", record)}>
-              Edit Stock
+        <div onClick={(e) => e.stopPropagation()}>
+          <Space wrap>
+            <Button size="small" icon={<EditOutlined />} onClick={() => openEditProduct(record)}>
+              Edit
             </Button>
-          )}
-          {/* CHANGED: confirmation message now warns specifically when
-              the product has variants attached, since deleting it in
-              that case may leave those variants in an undefined state
-              (behavior depends on the backend FK setup, which hasn't
-              been confirmed yet — see chat notes). */}
-          {isDirector && (
-            <Popconfirm
-              title="Delete this product?"
-              description={
-                record.variants.length > 0
-                  ? `This product has ${record.variants.length} variant(s) attached. Deleting it may affect them. Are you sure?`
-                  : "This cannot be undone."
-              }
-              onConfirm={() => handleDeleteProduct(record.id)}
-            >
-              <Button size="small" danger icon={<DeleteOutlined />} />
-            </Popconfirm>
-          )}
-        </Space>
+            <Button size="small" onClick={() => openAddVariant(record)}>
+              Add Variant
+            </Button>
+            {isDirector && record.variants.length === 0 && (
+              <Button size="small" onClick={() => openStockEdit("product", record)}>
+                Edit Stock
+              </Button>
+            )}
+            {/* CHANGED: a product with variants can no longer be deleted at
+                all, not just warned about. The delete button is disabled
+                and wrapped in a Tooltip explaining why, instead of a
+                Popconfirm that still lets the delete through. Variants must
+                be removed one by one (via the expanded row's own delete
+                button) before the product itself becomes deletable. */}
+            {isDirector && record.variants.length > 0 && (
+              <Tooltip title="Delete this product's variants first, then you can delete the product.">
+                <Button size="small" danger icon={<DeleteOutlined />} disabled />
+              </Tooltip>
+            )}
+            {isDirector && record.variants.length === 0 && (
+              <Popconfirm
+                title="Delete this product?"
+                description="This cannot be undone."
+                onConfirm={() => handleDeleteProduct(record)}
+              >
+                <Button size="small" danger icon={<DeleteOutlined />} />
+              </Popconfirm>
+            )}
+          </Space>
+        </div>
       ),
     },
   ];
 
   const expandableConfig = {
     rowExpandable: (record) => record.variants.length > 0,
+    expandRowByClick: true, // NEW: click anywhere on the product row to expand, not just the small caret icon
     expandedRowRender: (record) => (
       <Table columns={variantColumns} dataSource={record.variants} rowKey="id" pagination={false} />
     ),
@@ -398,6 +445,15 @@ export default function ProductPage() {
         </Row>
 
         {errorMsg && <Text type="danger">{errorMsg}</Text>}
+
+        {/* NEW: explicit empty state. Without this, an empty `products` array
+            means groupedByCategory is `{}`, and Object.entries({}).map(...)
+            renders nothing at all — no Card, no message, just blank space
+            where the page content should be. This makes the "there's genuinely
+            nothing here yet" case visible instead of looking like a load failure. */}
+        {!loading && !errorMsg && products.length === 0 && (
+          <Empty description="No products yet — add your first product to get started." />
+        )}
 
         {Object.entries(groupedByCategory).map(([categoryName, categoryProducts]) => (
           <Row key={categoryName}>
@@ -452,7 +508,7 @@ export default function ProductPage() {
           <Form.Item
             name="currentStock"
             label="Current Stock"
-            rules={[{ required: true }]}
+            rules={[{ required: false }]} // CHANGED: was required: true — same bug as pricePerUnit had. A variant-having product doesn't use this field at all, so it can't be mandatory.
             tooltip="Only used if this product has no variants. Variants each have their own stock."
           >
             <InputNumber style={{ width: "100%" }} min={0} />
