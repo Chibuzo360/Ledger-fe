@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   Row,
   Col,
-  Card,
   Table,
   Button,
   Modal,
@@ -14,8 +13,8 @@ import {
   Space,
   Typography,
   Popconfirm,
-  Tooltip, // NEW: used to explain the disabled delete button
-  Empty, // NEW: empty state when there are no products yet
+  Tooltip,
+  Empty,
 } from "antd";
 import { PlusOutlined, EditOutlined, DeleteOutlined } from "@ant-design/icons";
 import api from "../api/axiosConfig";
@@ -24,6 +23,26 @@ import { useAuth } from "../context/AuthContext";
 const { Title, Text } = Typography;
 
 const CREATE_NEW_VALUE = "__create_new__";
+// Sentinel id for the synthetic "Uncategorized" row. Never sent to the
+// backend — it only exists so the frontend has something to key/render
+// products whose `category` is null (or whose category was just deleted
+// and got orphaned by ProductCategoryService.deleteProductCategory()).
+const UNCATEGORIZED_ID = "__uncategorized__";
+
+// Title-cases a category name — "building materials" -> "Building Materials".
+// Applied everywhere a category name is created or renamed, so naming stays
+// consistent no matter how it was typed.
+// KNOWN LIMITATION: this also lowercases the rest of each word, so a real
+// acronym like "PVC" becomes "Pvc". No simple rule can tell "caps lock was
+// on by accident" from "this is meant to be an acronym" — flagging rather
+// than hiding it.
+const capitalizeWords = (str) =>
+  str
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
 
 export default function ProductPage() {
   const { user } = useAuth();
@@ -34,24 +53,31 @@ export default function ProductPage() {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
-  // CHANGED: hasVariant/setHadVariant removed — it was declared but never
-  // read anywhere. Each row already carries its own `variants` array (see
-  // groupedByCategory below), so `record.variants.length > 0` is the single
-  // source of truth for "does this product have variants" — no separate
-  // piece of state needed, and no risk of it going stale.
 
+  // --- Add/Edit Product modal ---
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
+  // Which category row "Add Product" was clicked from. Only used in add
+  // mode — the product form no longer has a category field to read this
+  // from, since category is scoped by context instead of picked in-form.
+  const [addTargetCategory, setAddTargetCategory] = useState(null);
   const [productForm] = Form.useForm();
   const [categorySearch, setCategorySearch] = useState("");
 
+  // --- Add/Rename Category modal ---
+  const [categoryModalOpen, setCategoryModalOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState(null); // null = add mode
+  const [categoryForm] = Form.useForm();
+
+  // --- Add/Edit Variant modal ---
   const [variantModalOpen, setVariantModalOpen] = useState(false);
   const [editingVariant, setEditingVariant] = useState(null);
   const [variantParentProduct, setVariantParentProduct] = useState(null);
   const [variantForm] = Form.useForm();
 
+  // --- Director-only stock edit modal ---
   const [stockModalOpen, setStockModalOpen] = useState(false);
-  const [stockTarget, setStockTarget] = useState(null);
+  const [stockTarget, setStockTarget] = useState(null); // { type: 'product' | 'variant', record }
   const [stockForm] = Form.useForm();
 
   const fetchAll = async () => {
@@ -81,38 +107,63 @@ export default function ProductPage() {
     fetchAll();
   }, []);
 
-  const groupedByCategory = useMemo(() => {
-    const groups = {};
-    // each product should have a category name chosen based on the given conditions and a productVariant name with the consditions.
-    // recall that the product have been previously set to the response data of "/products" when we called through the api
-
-    products.forEach((product) => {
-      const categoryName = product.category
-        ? product.category.name
-        : "Uncategorized"; 
-      const productVariants = variants.filter(
-        (v) => v.product && v.product.id === product.id,
-      );
-      // putting product and variants in the an object,"row". Products already has its own value(from the "for each line").
-      const row = { ...product, variants: productVariants };
-      if (!groups[categoryName]) groups[categoryName] = [];
-      groups[categoryName].push(row);
+  // ---------------------------------------------------------------------
+  // Three-level grouping: one row per Category — INCLUDING empty ones, so
+  // a freshly-created category is visible immediately with "Add Product"
+  // already scoped to it — each carrying its own `products` array, each
+  // product carrying its own `variants` array. A synthetic "Uncategorized"
+  // row is appended only when at least one product actually has no
+  // category — it's never a real row you can rename/delete/add into.
+  // ---------------------------------------------------------------------
+  const categoryRows = useMemo(() => {
+    const byId = new Map();
+    categories.forEach((cat) => {
+      byId.set(cat.id, { ...cat, products: [] });
     });
 
+    const uncategorizedProducts = [];
 
-    return groups;
-  }, [products, variants]);
+    products.forEach((product) => {
+      const productVariants = variants.filter(
+        (v) => v.product && v.product.id === product.id
+      );
+      const row = { ...product, variants: productVariants };
 
+      if (product.category && byId.has(product.category.id)) {
+        byId.get(product.category.id).products.push(row);
+      } else {
+        uncategorizedProducts.push(row);
+      }
+    });
+
+    const rows = Array.from(byId.values());
+    if (uncategorizedProducts.length > 0) {
+      rows.push({
+        id: UNCATEGORIZED_ID,
+        name: "Uncategorized",
+        products: uncategorizedProducts,
+        isUncategorized: true,
+      });
+    }
+    return rows;
+  }, [categories, products, variants]);
+
+  // ---------------------------------------------------------------------
+  // Category <Select> options — used ONLY in the Edit Product modal now.
+  // Add Product has no category field at all (category comes from which
+  // category row you clicked "Add Product" on), and top-level category
+  // creation goes through the dedicated Add Category modal. This Select
+  // stays in Edit mode because a director may want to move an existing
+  // product to a category that doesn't exist yet.
+  // ---------------------------------------------------------------------
   const categoryOptions = useMemo(() => {
     const search = categorySearch.trim();
     const filtered = search
-      ? categories.filter((c) =>
-          c.name.toLowerCase().includes(search.toLowerCase()),
-        )
+      ? categories.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()))
       : categories;
     const base = filtered.map((c) => ({ label: c.name, value: c.id }));
     const alreadyExists = categories.some(
-      (c) => c.name.toLowerCase() === search.toLowerCase(),
+      (c) => c.name.toLowerCase() === search.toLowerCase()
     );
     if (search && !alreadyExists) {
       base.push({ label: `+ Create "${search}"`, value: CREATE_NEW_VALUE });
@@ -120,8 +171,48 @@ export default function ProductPage() {
     return base;
   }, [categories, categorySearch]);
 
-  const openAddProduct = () => {
+  // ---------------------------------------------------------------------
+  // BUG FIX: previously, selecting "+ Create ..." just stored the
+  // CREATE_NEW_VALUE sentinel in the form and deferred actual creation
+  // until form submit. That meant the Select kept displaying the "+
+  // Create "x"" option's own label as its selected text for as long as
+  // the modal stayed open, and `categorySearch` never got reset — so
+  // reopening the dropdown started from that stale leftover text, and new
+  // keystrokes landed after it instead of replacing it. That's the "box
+  // fills with Create..., then my typed letters" glitch.
+  //
+  // Fix: create the category immediately, right here, the moment it's
+  // selected — swap the sentinel out for the real new category's id
+  // straight away — and always clear categorySearch after ANY selection
+  // (not just the create-new case), so the Select never has stale search
+  // text to fall back on.
+  // ---------------------------------------------------------------------
+  const handleCategorySelectChange = async (value) => {
+    if (value === CREATE_NEW_VALUE) {
+      const name = capitalizeWords(categorySearch);
+      if (!name) {
+        setCategorySearch("");
+        return;
+      }
+      try {
+        const created = await api.post("/categories", { name });
+        setCategories((prev) => [...prev, created.data]);
+        productForm.setFieldsValue({ categoryId: created.data.id });
+        message.success(`Category "${created.data.name}" created.`);
+      } catch (err) {
+        message.error("Failed to create category.");
+        productForm.setFieldsValue({ categoryId: undefined });
+      }
+    }
+    setCategorySearch("");
+  };
+
+  // ---------------------------------------------------------------------
+  // Product modal handlers
+  // ---------------------------------------------------------------------
+  const openAddProduct = (categoryRow) => {
     setEditingProduct(null);
+    setAddTargetCategory(categoryRow);
     productForm.resetFields();
     setCategorySearch("");
     setProductModalOpen(true);
@@ -129,6 +220,7 @@ export default function ProductPage() {
 
   const openEditProduct = (record) => {
     setEditingProduct(record);
+    setAddTargetCategory(null);
     productForm.setFieldsValue({
       name: record.name,
       unit: record.unit,
@@ -143,15 +235,14 @@ export default function ProductPage() {
   const handleProductSubmit = async () => {
     try {
       const values = await productForm.validateFields();
-      let categoryId = values.categoryId;
 
-      if (categoryId === CREATE_NEW_VALUE) {
-        const created = await api.post("/categories", {
-          name: categorySearch.trim(),
-        });
-        categoryId = created.data.id;
-        setCategories((prev) => [...prev, created.data]);
-      }
+      // In add mode there's no categoryId form field (it's hidden — see
+      // the Modal JSX below), so the category comes from whichever
+      // category row "Add Product" was clicked on. In edit mode it comes
+      // from the Select, and by now it's always a real id — never the
+      // CREATE_NEW_VALUE sentinel, since that gets resolved immediately in
+      // handleCategorySelectChange above, not deferred to submit time.
+      const categoryId = editingProduct ? values.categoryId : addTargetCategory?.id;
 
       const payload = {
         name: values.name,
@@ -177,12 +268,6 @@ export default function ProductPage() {
   };
 
   const handleDeleteProduct = async (record) => {
-    // CHANGED: guard duplicated here (not just in the button render below).
-    // The button already prevents this via `disabled`, but this function is
-    // the actual thing that talks to the backend — if it's ever called from
-    // somewhere else later, or `record.variants` is stale for any reason,
-    // this stops the request before it's sent rather than relying only on
-    // the UI having rendered correctly.
     if (record.variants.length > 0) {
       message.error("Delete this product's variants first, then delete the product.");
       return;
@@ -192,18 +277,9 @@ export default function ProductPage() {
       message.success("Product deleted.");
       fetchAll();
     } catch (err) {
-      // CHANGED: branch on the response instead of one generic message,
-      // same pattern LoginPage already uses (no response vs. specific
-      // status vs. everything else). This is what actually surfaces the
-      // backend's new 409 check to the person clicking the button —
-      // without this, a real "variants exist" rejection and a dead
-      // backend look identical to the director.
       if (!err.response) {
         message.error("Can't reach the server. Is the backend running?");
       } else if (err.response.status === 409) {
-        // Backend's ResponseStatusException message, when present, is the
-        // most accurate text we can show ("...active Variants."). Falling
-        // back to a hardcoded string only if the body doesn't have one.
         message.error(
           err.response.data?.message ||
             "This product still has variants attached — delete those first."
@@ -216,6 +292,66 @@ export default function ProductPage() {
     }
   };
 
+  // ---------------------------------------------------------------------
+  // Category modal handlers (Add + Rename). Delete is a plain Popconfirm
+  // inline in categoryColumns below — no modal needed for that one.
+  // ---------------------------------------------------------------------
+  const openAddCategory = () => {
+    setEditingCategory(null);
+    categoryForm.resetFields();
+    setCategoryModalOpen(true);
+  };
+
+  const openEditCategory = (categoryRow) => {
+    setEditingCategory(categoryRow);
+    categoryForm.setFieldsValue({ name: categoryRow.name });
+    setCategoryModalOpen(true);
+  };
+
+  const handleCategorySubmit = async () => {
+    try {
+      const values = await categoryForm.validateFields();
+      const name = capitalizeWords(values.name);
+
+      if (editingCategory) {
+        await api.put(`/categories/${editingCategory.id}`, { name });
+        message.success("Category renamed.");
+      } else {
+        await api.post("/categories", { name });
+        message.success("Category created.");
+      }
+      setCategoryModalOpen(false);
+      fetchAll();
+    } catch (err) {
+      if (err?.errorFields) return;
+      message.error("Failed to save category.");
+    }
+  };
+
+  // Unlike product/variant delete, category delete is NOT blocked when it
+  // has products — the backend (ProductCategoryService.deleteProductCategory)
+  // deliberately orphans them to "Uncategorized" instead of refusing. This
+  // Popconfirm just makes that consequence visible before it happens; it
+  // never disables the button the way the product-delete button does.
+  const handleDeleteCategory = async (categoryRow) => {
+    try {
+      await api.delete(`/categories/${categoryRow.id}`);
+      message.success("Category deleted.");
+      fetchAll();
+    } catch (err) {
+      if (!err.response) {
+        message.error("Can't reach the server. Is the backend running?");
+      } else if (err.response.status === 403) {
+        message.error("Only a director can delete a category.");
+      } else {
+        message.error("Failed to delete category.");
+      }
+    }
+  };
+
+  // ---------------------------------------------------------------------
+  // Variant modal handlers
+  // ---------------------------------------------------------------------
   const openAddVariant = (product) => {
     setEditingVariant(null);
     setVariantParentProduct(product);
@@ -268,6 +404,9 @@ export default function ProductPage() {
     }
   };
 
+  // ---------------------------------------------------------------------
+  // Stock edit modal (director only)
+  // ---------------------------------------------------------------------
   const openStockEdit = (type, record) => {
     setStockTarget({ type, record });
     stockForm.resetFields();
@@ -308,8 +447,10 @@ export default function ProductPage() {
     }
   };
 
+  // ---------------------------------------------------------------------
+  // Column definitions — three levels: Category, Product, Variant
+  // ---------------------------------------------------------------------
   const variantColumns = [
-    // CHANGED: Producer moved to the first (leftmost) column, per request.
     { title: "Producer", dataIndex: "producer", key: "producer" },
     { title: "Size", dataIndex: "size", key: "size" },
     {
@@ -372,11 +513,10 @@ export default function ProductPage() {
     {
       title: "Actions",
       key: "actions",
-      // CHANGED: wrapped in a div with stopPropagation, because expandRowByClick
-      // (added below) makes the whole <tr> clickable to expand/collapse variants.
-      // Without this, clicking any action button (Edit, Delete, etc.) would also
-      // toggle the row's expand state as the click bubbles up — e.g. clicking
-      // "Edit" would open the modal AND expand/collapse the row at once.
+      // Wrapped with stopPropagation because this table's expandRowByClick
+      // (below) makes the whole product <tr> clickable to expand/collapse
+      // variants. Without it, clicking Edit/Delete/etc. would ALSO toggle
+      // the row's expand state as the click bubbles up.
       render: (_, record) => (
         <div onClick={(e) => e.stopPropagation()}>
           <Space wrap>
@@ -391,12 +531,6 @@ export default function ProductPage() {
                 Edit Stock
               </Button>
             )}
-            {/* CHANGED: a product with variants can no longer be deleted at
-                all, not just warned about. The delete button is disabled
-                and wrapped in a Tooltip explaining why, instead of a
-                Popconfirm that still lets the delete through. Variants must
-                be removed one by one (via the expanded row's own delete
-                button) before the product itself becomes deletable. */}
             {isDirector && record.variants.length > 0 && (
               <Tooltip title="Delete this product's variants first, then you can delete the product.">
                 <Button size="small" danger icon={<DeleteOutlined />} disabled />
@@ -417,63 +551,132 @@ export default function ProductPage() {
     },
   ];
 
-  const expandableConfig = {
+  const productExpandable = {
     rowExpandable: (record) => record.variants.length > 0,
-    expandRowByClick: true, // NEW: click anywhere on the product row to expand, not just the small caret icon
+    expandRowByClick: true,
     expandedRowRender: (record) => (
       <Table columns={variantColumns} dataSource={record.variants} rowKey="id" pagination={false} />
     ),
   };
 
+  // Category is now a real, top-level table row — this replaces the old
+  // one-Card-per-category loop entirely.
+  const categoryColumns = [
+    { title: "Category", dataIndex: "name", key: "name" },
+    {
+      title: "Products",
+      key: "productCount",
+      render: (_, record) => record.products.length,
+    },
+    {
+      title: "Actions",
+      key: "actions",
+      render: (_, record) => (
+        <div onClick={(e) => e.stopPropagation()}>
+          <Space wrap>
+            {/* "Uncategorized" is a synthetic bucket, not a real category —
+                you can't add into it, rename it, or delete it. */}
+            {!record.isUncategorized && (
+              <Button size="small" icon={<PlusOutlined />} onClick={() => openAddProduct(record)}>
+                Add Product
+              </Button>
+            )}
+            {!record.isUncategorized && (
+              <Button size="small" icon={<EditOutlined />} onClick={() => openEditCategory(record)}>
+                Rename
+              </Button>
+            )}
+            {!record.isUncategorized && isDirector && (
+              <Popconfirm
+                title="Delete this category?"
+                description={
+                  record.products.length > 0
+                    ? `${record.products.length} product(s) in this category will become Uncategorized. Continue?`
+                    : "This cannot be undone."
+                }
+                onConfirm={() => handleDeleteCategory(record)}
+              >
+                <Button size="small" danger icon={<DeleteOutlined />} />
+              </Popconfirm>
+            )}
+          </Space>
+        </div>
+      ),
+    },
+  ];
+
+  const categoryExpandable = {
+    rowExpandable: (record) => record.products.length > 0,
+    expandRowByClick: true,
+    expandedRowRender: (record) => (
+      <Table
+        columns={productColumns}
+        dataSource={record.products}
+        rowKey="id"
+        pagination={false}
+        expandable={productExpandable}
+      />
+    ),
+  };
+
   return (
     <div style={{ padding: "16px" }}>
-      <Space orientation="vertical" size="large" style={{ width: "100%" }}>
-        <Row justify="space-between" align="middle" wrap>
-          <Col>
-            <Title level={3} style={{ margin: 0 }}>
-              Products
-            </Title>
-            <Text type="secondary">
-              Manage your product catalog, categories, and variants.
-            </Text>
-          </Col>
-          <Col>
-            <Button type="primary" icon={<PlusOutlined />} onClick={openAddProduct}>
-              Add Product
-            </Button>
-          </Col>
-        </Row>
+      <Row justify="space-between" align="middle" wrap style={{ marginBottom: 16 }}>
+        <Col>
+          <Title level={3} style={{ margin: 0 }}>
+            Products
+          </Title>
+          <Text type="secondary">Manage your categories, products, and variants.</Text>
+        </Col>
+        <Col>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openAddCategory}>
+            Add Category
+          </Button>
+        </Col>
+      </Row>
 
-        {errorMsg && <Text type="danger">{errorMsg}</Text>}
+      {errorMsg && <Text type="danger">{errorMsg}</Text>}
 
-        {/* NEW: explicit empty state. Without this, an empty `products` array
-            means groupedByCategory is `{}`, and Object.entries({}).map(...)
-            renders nothing at all — no Card, no message, just blank space
-            where the page content should be. This makes the "there's genuinely
-            nothing here yet" case visible instead of looking like a load failure. */}
-        {!loading && !errorMsg && products.length === 0 && (
-          <Empty description="No products yet — add your first product to get started." />
-        )}
+      {!loading && !errorMsg && categoryRows.length === 0 && (
+        <Empty description="No categories yet — add your first category to get started." />
+      )}
 
-        {Object.entries(groupedByCategory).map(([categoryName, categoryProducts]) => (
-          <Row key={categoryName}>
-            <Card title={categoryName} variant="plain" style={{ width: "100%" }}>
-              <Table
-                columns={productColumns}
-                dataSource={categoryProducts}
-                rowKey="id"
-                loading={loading}
-                pagination={false}
-                scroll={{ x: true }}
-                expandable={expandableConfig}
-              />
-            </Card>
-          </Row>
-        ))}
-      </Space>
+      {(categoryRows.length > 0 || loading) && (
+        <Table
+          columns={categoryColumns}
+          dataSource={categoryRows}
+          rowKey="id"
+          loading={loading}
+          pagination={false}
+          scroll={{ x: true }}
+          expandable={categoryExpandable}
+        />
+      )}
 
+      {/* Add/Rename Category modal */}
       <Modal
-        title={editingProduct ? "Edit Product" : "Add Product"}
+        title={editingCategory ? "Rename Category" : "Add Category"}
+        open={categoryModalOpen}
+        onOk={handleCategorySubmit}
+        onCancel={() => setCategoryModalOpen(false)}
+        destroyOnClose
+      >
+        <Form form={categoryForm} layout="vertical">
+          <Form.Item
+            name="name"
+            label="Category Name"
+            rules={[{ required: true, message: "Category name is required." }]}
+          >
+            <Input placeholder="e.g. Tiles, Cement, Doors" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* Add/Edit Product modal */}
+      <Modal
+        title={
+          editingProduct ? "Edit Product" : `Add Product — ${addTargetCategory?.name ?? ""}`
+        }
         open={productModalOpen}
         onOk={handleProductSubmit}
         onCancel={() => setProductModalOpen(false)}
@@ -486,17 +689,26 @@ export default function ProductPage() {
           <Form.Item name="unit" label="Unit" rules={[{ required: true }]}>
             <Input placeholder="e.g. bags, lengths, cartons" />
           </Form.Item>
-          <Form.Item name="categoryId" label="Category">
-            <Select
-              showSearch
-              allowClear
-              placeholder="Select or create a category"
-              options={categoryOptions}
-              filterOption={false}
-              onSearch={setCategorySearch}
-              notFoundContent={null}
-            />
-          </Form.Item>
+
+          {/* Category field only shows in Edit mode. In Add mode, category
+              is already fixed by which category row "Add Product" was
+              clicked on — no field needed, no risk of picking the wrong
+              one. */}
+          {editingProduct && (
+            <Form.Item name="categoryId" label="Category">
+              <Select
+                showSearch
+                allowClear
+                placeholder="Select or create a category"
+                options={categoryOptions}
+                filterOption={false}
+                onSearch={setCategorySearch}
+                onChange={handleCategorySelectChange}
+                notFoundContent={null}
+              />
+            </Form.Item>
+          )}
+
           <Form.Item
             name="pricePerUnit"
             label="Price Per Unit"
@@ -508,7 +720,7 @@ export default function ProductPage() {
           <Form.Item
             name="currentStock"
             label="Current Stock"
-            rules={[{ required: false }]} // CHANGED: was required: true — same bug as pricePerUnit had. A variant-having product doesn't use this field at all, so it can't be mandatory.
+            rules={[{ required: false }]}
             tooltip="Only used if this product has no variants. Variants each have their own stock."
           >
             <InputNumber style={{ width: "100%" }} min={0} />
@@ -516,8 +728,13 @@ export default function ProductPage() {
         </Form>
       </Modal>
 
+      {/* Add/Edit Variant modal */}
       <Modal
-        title={editingVariant ? `Edit Variant — ${variantParentProduct?.name ?? ""}` : `Add Variant — ${variantParentProduct?.name ?? ""}`}
+        title={
+          editingVariant
+            ? `Edit Variant — ${variantParentProduct?.name ?? ""}`
+            : `Add Variant — ${variantParentProduct?.name ?? ""}`
+        }
         open={variantModalOpen}
         onOk={handleVariantSubmit}
         onCancel={() => setVariantModalOpen(false)}
@@ -539,6 +756,7 @@ export default function ProductPage() {
         </Form>
       </Modal>
 
+      {/* Director-only stock edit modal */}
       <Modal
         title="Edit Stock"
         open={stockModalOpen}
