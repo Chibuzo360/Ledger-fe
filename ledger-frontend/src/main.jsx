@@ -11,6 +11,7 @@ import TransactionsPage from './pages/TransactionsPage';
 import ExpensesPage from './pages/ExpensesPage';
 import RetailersPage from './pages/RetailersPage';
 import ProductPage from './pages/ProductPage';
+import StockInPage from './pages/StockInPage'; // Import the StockInPage component
 
 // import './index.css'; 
 
@@ -25,6 +26,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
           {/* Public Route - Using your real LoginPage component now! */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} /> 
+
           
 
           {/* Protected Routes */}
@@ -40,6 +42,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
             <Route path='/expenses' element={<ExpensesPage/>} />
             <Route path='/retailers' element={<RetailersPage/>} />
             <Route path='/product' element={<ProductPage/>}/>
+            <Route path='/stock-in' element={<StockInPage/>}/> 
           </Route>
           
           {/* Root redirect: Send users to /dashboard by default */}

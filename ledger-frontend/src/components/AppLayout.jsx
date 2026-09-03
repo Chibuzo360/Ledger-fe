@@ -35,8 +35,12 @@ const AppLayout = () => {
     {
       key: '5',
       label: <Link to="/product">Products</Link>,
+    },
+    {
+      key: '6',
+      label: <Link to="/stock-in">Stock In</Link>,
     }
-    // We will add more links (Products, Stock In, etc.) as we build them
+    // We will add more links (, Stock In, etc.) as we build them
   ];
 
   return (
