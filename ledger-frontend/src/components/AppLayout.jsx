@@ -15,6 +15,7 @@ const AppLayout = () => {
   };
 
   // Define the links for our sidebar menu
+  //new
   const menuItems = [
     {
       key: '1',
