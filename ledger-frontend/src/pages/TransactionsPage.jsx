@@ -71,6 +71,15 @@ const TransactionsPage = () => {
   const [cartItems, setCartItems] = useState([]);
   const [cartLineForm] = Form.useForm();
 
+  // NEW: discount feature. maxDiscount is the director-set global cap,
+  // fetched from the backend — never hardcoded, since it's meant to be
+  // changeable without a redeploy. discountCapModalOpen/-Form are for the
+  // small director-only "edit the cap" control.
+  const [maxDiscount, setMaxDiscount] = useState(0);
+  const [discountCapModalOpen, setDiscountCapModalOpen] = useState(false);
+  const [discountCapForm] = Form.useForm();
+  const [discountCapSubmitting, setDiscountCapSubmitting] = useState(false);
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm();
@@ -82,6 +91,9 @@ const TransactionsPage = () => {
 
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [detailsTxn, setDetailsTxn] = useState(null);
+  // NEW: line items for whichever transaction Details is currently open on.
+  const [detailsItems, setDetailsItems] = useState([]);
+  const [detailsItemsLoading, setDetailsItemsLoading] = useState(false);
 
   const [filterMode, setFilterMode] = useState("single");
   const [singleDate, setSingleDate] = useState(null);
@@ -236,6 +248,34 @@ const TransactionsPage = () => {
   // `errorMsg` (the page-level error banner) or `loading` (the main
   // table's spinner) — a failure here shouldn't block viewing existing
   // transactions, it should only affect the "Record New Sale" modal.
+  // NEW: director-only — view/edit the global discount cap.
+  const openDiscountCapModal = () => {
+    discountCapForm.setFieldsValue({ maxDiscountAmount: maxDiscount });
+    setDiscountCapModalOpen(true);
+  };
+
+  const handleUpdateDiscountCap = async (values) => {
+    setDiscountCapSubmitting(true);
+    try {
+      const res = await api.put("/discount-settings", {
+        maxDiscountAmount: values.maxDiscountAmount,
+      });
+      setMaxDiscount(res.data.maxDiscountAmount);
+      message.success("Discount cap updated.");
+      setDiscountCapModalOpen(false);
+    } catch (error) {
+      if (!error.response) {
+        message.error("Can't reach the server.");
+      } else if (error.response.status === 403) {
+        message.error("Only a director can change the discount cap.");
+      } else {
+        message.error("Failed to update discount cap.");
+      }
+    } finally {
+      setDiscountCapSubmitting(false);
+    }
+  };
+
   const fetchCatalog = async () => {
     try {
       const [productsRes, variantsRes] = await Promise.all([
@@ -249,10 +289,23 @@ const TransactionsPage = () => {
     }
   };
 
+  // NEW: fetches the director-set discount cap. Non-fatal on failure —
+  // falls back to 0 (no discount allowed), which is a safe default rather
+  // than silently allowing an unbounded discount if this request fails.
+  const fetchDiscountCap = async () => {
+    try {
+      const res = await api.get("/discount-settings");
+      setMaxDiscount(res.data.maxDiscountAmount ?? 0);
+    } catch (error) {
+      setMaxDiscount(0);
+    }
+  };
+
   useEffect(() => {
     fetchTransactions();
     fetchRetailers();
     fetchCatalog();
+    fetchDiscountCap();
   }, []);
 
   // NEW: flattens products + variants into one pickable list for the cart.
@@ -341,29 +394,102 @@ const TransactionsPage = () => {
     0,
   );
 
+  // NEW: live-watches the Discount field so the displayed total updates as
+  // the worker types, without needing a manual onChange/state pairing.
+  const discountWatch = Form.useWatch("discountAmount", form) || 0;
+  const amountAfterDiscount = Math.max(cartTotal - discountWatch, 0);
+
   // CHANGED: totalAmount is no longer read from the form — it's not a form
   // field anymore, it comes from the server's computation over `items`.
   // The old `alreadyConfirmed` checkbox is gone too (see chat: it never
   // actually worked, since addTransaction() always forced paymentStatus
   // back to "pending" regardless of what it sent).
-  const handleCreateTransaction = async (values) => {
+  //
+  // CHANGED: this is now the entry point of a check-chain instead of doing
+  // the submit directly. Two things get checked, in order, before anything
+  // is sent: (1) is there a product picked in the "add item" row that never
+  // got clicked into the cart, and (2) does amountPaid exceed the estimated
+  // total. Both used to either silently do nothing (the unadded-line case)
+  // or hard-block with message.error (the over-cap case) — now both ask
+  // the worker to confirm instead, matching what was actually requested.
+  const handleCreateTransaction = (values) => {
     if (cartItems.length === 0) {
       message.error("Add at least one item to the sale before saving.");
       return;
     }
-    // NEW: mirrors the same cap check confirmPayment() already enforces
-    // server-side — catches an obviously wrong entry before it's even sent.
-    if (values.amountPaid > cartTotal) {
-      message.error("Amount paid can't exceed the total sale amount.");
+
+    const discountAmount = values.discountAmount || 0;
+
+    // NEW: client-side mirror of the backend's own cap check — catches an
+    // obviously-over-cap entry before it round-trips to the server. This is
+    // a genuine block, not a confirm, because unlike the amountPaid check
+    // below, there's no legitimate reason a discount should ever exceed a
+    // director-set policy value — it's not a judgment call, it's a rule.
+    if (discountAmount > maxDiscount) {
+      message.error(
+        `Discount can't exceed the approved cap of ₦${maxDiscount.toLocaleString()}.`,
+      );
+      return;
+    }
+    if (discountAmount > cartTotal) {
+      message.error("Discount can't exceed the sale's total.");
       return;
     }
 
+    // CHANGED: the amount-owed figure this checks against now accounts for
+    // the discount — otherwise a legitimately fully-paid discounted sale
+    // would incorrectly trigger the "are you sure" prompt below.
+    const amountOwed = cartTotal - discountAmount;
+
+    const pendingLineOption = cartLineForm.getFieldValue("sellableOption");
+
+    const checkAmountThenSubmit = () => {
+      if (values.amountPaid > amountOwed) {
+        // NEW: soft confirm, not a hard block. There's no backend-side cap
+        // on amountPaid at creation time (unlike confirmPayment, which DOES
+        // hard-reject overpayment — see the Update Payment handler below,
+        // which is deliberately NOT given this same "are you sure" escape
+        // hatch, because saying yes there would just guarantee a 400 from
+        // the backend). At creation, paying more than the computed total
+        // has plausible real reasons (e.g. a round-number cash deposit), so
+        // this is a genuine "confirm, don't block."
+        Modal.confirm({
+          title: "Amount paid is more than the total",
+          content: `You entered ₦${values.amountPaid.toLocaleString()}, but the total after discount is ₦${amountOwed.toLocaleString()}. Are you sure this is correct?`,
+          okText: "Yes, it's correct",
+          cancelText: "Let me fix it",
+          onOk: () => submitTransaction(values, discountAmount),
+        });
+      } else {
+        submitTransaction(values, discountAmount);
+      }
+    };
+
+    if (pendingLineOption) {
+      // NEW: this is the exact gap flagged when the cart was first built —
+      // a product picked in the mini "add item" form that never got its own
+      // "Add" click. Previously it just silently vanished on submit.
+      Modal.confirm({
+        title: "There's an item you haven't added yet",
+        content:
+          'A product is selected in the "Add Item" row below, but it was never added to the cart with the Add button. It will NOT be included in this sale unless you go back and add it.',
+        okText: "Continue Without It",
+        cancelText: "Go Back",
+        onOk: checkAmountThenSubmit,
+      });
+    } else {
+      checkAmountThenSubmit();
+    }
+  };
+
+  const submitTransaction = async (values, discountAmount) => {
     setSubmitting(true);
     try {
       await api.post("/transactions", {
         customerName: values.customerName,
         customerPhone: values.customerPhone || null,
         amountPaid: values.amountPaid,
+        discountAmount, // NEW
         retailerId: values.retailerId || null,
         items: cartItems.map((item) => ({
           productId: item.productId,
@@ -405,7 +531,21 @@ const TransactionsPage = () => {
     setIsPaymentModalOpen(true);
   };
 
+  // CHANGED: the `max` clamp on this form's InputNumber is gone too (see
+  // below), so this now needs its own explicit check. Unlike the create
+  // form above, this is NOT a "confirm to override" — confirmPayment()
+  // hard-rejects overpayment server-side with a 400 (that guard is real
+  // business logic: you can't pay more than what a specific, already-fixed
+  // invoice says is owed). Offering a "yes I'm sure, proceed" button here
+  // would just guarantee a rejected request one step later — so this stays
+  // a plain, clear message instead, not a confirm dialog.
   const handleConfirmPayment = async (values) => {
+    if (values.amountPaid > selectedTxn.amount) {
+      message.error(
+        `Amount paid can't exceed the total owed (₦${selectedTxn.amount.toLocaleString()}).`,
+      );
+      return;
+    }
     setPaymentSubmitting(true);
     try {
       await api.put(`/transactions/${selectedTxn.id}/confirm`, {
@@ -489,9 +629,23 @@ const TransactionsPage = () => {
     });
   };
 
-  const openDetails = (record) => {
+  // CHANGED: now async — fetches this transaction's items from
+  // /transaction_item/transaction/{id} (an endpoint that already existed,
+  // just wasn't being used by the frontend) so Details can actually show
+  // what was bought, not just the header-level totals.
+  const openDetails = async (record) => {
     setDetailsTxn(record);
     setIsDetailsOpen(true);
+    setDetailsItemsLoading(true);
+    try {
+      const res = await api.get(`/transaction_item/transaction/${record.id}`);
+      setDetailsItems(res.data);
+    } catch (error) {
+      message.error("Couldn't load the items for this transaction.");
+      setDetailsItems([]);
+    } finally {
+      setDetailsItemsLoading(false);
+    }
   };
 
   const renderActions = (_, record) => {
@@ -587,13 +741,21 @@ const TransactionsPage = () => {
             </Text>
           </Col>
           <Col>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => setIsModalOpen(true)}
-            >
-              Record New Sale
-            </Button>
+            <Space>
+              {/* NEW: director-only view/edit of the global discount cap. */}
+              {isDirector && (
+                <Button onClick={openDiscountCapModal}>
+                  Discount Cap: ₦{maxDiscount.toLocaleString()}
+                </Button>
+              )}
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={() => setIsModalOpen(true)}
+              >
+                Record New Sale
+              </Button>
+            </Space>
           </Col>
         </Row>
 
@@ -854,28 +1016,73 @@ const TransactionsPage = () => {
           />
 
           <div style={{ marginBottom: 16 }}>
-            <Text strong>Estimated Total: ₦{cartTotal.toLocaleString()}</Text>
+            <Text>Subtotal: ₦{cartTotal.toLocaleString()}</Text>
+            <br />
+            <Text strong>Estimated Total: ₦{amountAfterDiscount.toLocaleString()}</Text>
             <br />
             <Text type="secondary">
-              (The server recalculates this from current prices when you save.)
+              (The server recalculates this from current prices and re-checks the discount cap when you save.)
             </Text>
           </div>
 
+          {/* NEW: discount field. Capped visually to whichever is smaller —
+              the director-set global cap, or the sale's own subtotal (can't
+              discount more than the sale is worth). The real enforcement
+              against the cap happens server-side in addTransaction(); this
+              is just to stop an obviously-wrong entry before it's typed. */}
+          <Form.Item
+            label={`Discount (₦) — up to ₦${Math.min(maxDiscount, cartTotal).toLocaleString()}`}
+            name="discountAmount"
+            initialValue={0}
+          >
+            <InputNumber
+              min={0}
+              max={Math.min(maxDiscount, cartTotal)}
+              style={{ width: "100%" }}
+            />
+          </Form.Item>
+
           {/* CHANGED: "Total Amount" field removed — it's server-computed
-              now, not typed. Amount Paid stays, and now caps against the
-              live cart estimate the same way the Update Payment modal caps
-              against the real stored total. */}
+              now, not typed. Amount Paid's `max` clamp is gone too — it used
+              to silently snap the typed value down to cartTotal on blur with
+              no explanation. Over-cap entries are now caught in
+              handleCreateTransaction's confirm chain instead, which tells
+              the worker by how much and asks them to confirm. */}
           <Form.Item
             label="Amount Paid (₦)"
             name="amountPaid"
             rules={[{ required: true, message: "Amount paid is required" }]}
           >
-            <InputNumber min={0} max={cartTotal} style={{ width: "100%" }} placeholder="e.g. 50000" />
+            <InputNumber min={0} style={{ width: "100%" }} placeholder="e.g. 50000" />
           </Form.Item>
 
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={submitting} block>
               Save Transaction
+            </Button>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* NEW: director-only — view/edit the global discount cap. */}
+      <Modal
+        title="Discount Cap"
+        open={discountCapModalOpen}
+        onCancel={() => setDiscountCapModalOpen(false)}
+        footer={null}
+        destroyOnClose
+      >
+        <Form form={discountCapForm} layout="vertical" onFinish={handleUpdateDiscountCap}>
+          <Form.Item
+            label="Maximum discount workers can apply without your approval (₦)"
+            name="maxDiscountAmount"
+            rules={[{ required: true, message: "A cap amount is required" }]}
+          >
+            <InputNumber min={0} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={discountCapSubmitting} block>
+              Save Cap
             </Button>
           </Form.Item>
         </Form>
@@ -902,7 +1109,6 @@ const TransactionsPage = () => {
           >
             <InputNumber
               min={0}
-              max={selectedTxn?.amount}
               style={{ width: "100%" }}
             />
           </Form.Item>
@@ -971,6 +1177,56 @@ const TransactionsPage = () => {
             </Descriptions.Item>
           </Descriptions>
         )}
+
+        {/* NEW: what was actually bought. Falls back gracefully on a
+            transaction recorded before items existed at all (an empty
+            list, not an error) — the emptyText makes that distinction
+            clear instead of it looking like a loading failure. */}
+        <Divider>Items Purchased</Divider>
+        <Table
+          size="small"
+          loading={detailsItemsLoading}
+          dataSource={detailsItems}
+          rowKey="id"
+          pagination={false}
+          locale={{ emptyText: "No items recorded for this transaction." }}
+          columns={[
+            {
+              title: "Item",
+              key: "item",
+              render: (_, item) =>
+                item.productVariant
+                  ? `${item.product?.name ?? ""} (${item.productVariant.producer ?? ""} ${item.productVariant.size ?? ""})`
+                  : item.product?.name ?? "—",
+            },
+            { title: "Ordered", dataIndex: "quantityOrdered", key: "quantityOrdered" },
+            { title: "Supplied", dataIndex: "quantitySupplied", key: "quantitySupplied" },
+            {
+              title: "Status",
+              dataIndex: "supplyStatus",
+              key: "supplyStatus",
+              render: (status) => (
+                <Tag
+                  color={
+                    status === "supplied"
+                      ? "green"
+                      : status === "partially_supplied"
+                        ? "gold"
+                        : "red"
+                  }
+                >
+                  {(status ?? "").replace("_", " ").toUpperCase()}
+                </Tag>
+              ),
+            },
+            {
+              title: "Note",
+              dataIndex: "supplyNote",
+              key: "supplyNote",
+              render: (note) => note || "—",
+            },
+          ]}
+        />
       </Modal>
     </div>
   );
