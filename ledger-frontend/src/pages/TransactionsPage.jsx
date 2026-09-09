@@ -877,7 +877,7 @@ const TransactionsPage = () => {
         onCancel={() => {
           setIsModalOpen(false);
           form.resetFields();
-          setCartItems([]); // NEW: clear the cart along with the rest of the form
+          setCartItems([]); // clear the cart along with the rest of the form
           cartLineForm.resetFields();
         }}
         footer={null}
