@@ -76,6 +76,9 @@ export default function ProductPage() {
   const [variantForm] = Form.useForm();
 
   // --- Director-only stock edit modal ---
+  // NEW: shows past adjustments for whatever product/variant is currently open
+const [stockHistory, setStockHistory] = useState([]);
+const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
   const [stockModalOpen, setStockModalOpen] = useState(false);
   const [stockTarget, setStockTarget] = useState(null); // { type: 'product' | 'variant', record }
   const [stockForm] = Form.useForm();
@@ -407,45 +410,58 @@ export default function ProductPage() {
   // ---------------------------------------------------------------------
   // Stock edit modal (director only)
   // ---------------------------------------------------------------------
-  const openStockEdit = (type, record) => {
-    setStockTarget({ type, record });
-    stockForm.resetFields();
-    stockForm.setFieldsValue({ currentStock: record.currentStock });
-    setStockModalOpen(true);
-  };
+const openStockEdit = async (type, record) => {
+  setStockTarget({ type, record });
+  stockForm.resetFields();
+  stockForm.setFieldsValue({ currentStock: record.currentStock });
+  setStockModalOpen(true);
+
+  // NEW: pull this product/variant's adjustment history so you can see
+  // past edits without leaving the modal — makes testing self-verifying.
+  setStockHistoryLoading(true);
+  try {
+    const endpoint =
+      type === "product"
+        ? `/stock-adjustments/product/${record.id}`
+        : `/stock-adjustments/variant/${record.id}`;
+    const res = await api.get(endpoint);
+    setStockHistory(res.data);
+  } catch (err) {
+    setStockHistory([]); // fail quiet here — history is a nice-to-have, not blocking
+  } finally {
+    setStockHistoryLoading(false);
+  }
+};
 
   const handleStockSubmit = async () => {
-    try {
-      const values = await stockForm.validateFields();
-      const { type, record } = stockTarget;
+  try {
+    const values = await stockForm.validateFields();
+    const { type, record } = stockTarget;
 
-      if (type === "product") {
-        await api.put(`/products/${record.id}`, {
-          name: record.name,
-          unit: record.unit,
-          pricePerUnit: record.pricePerUnit,
-          currentStock: values.currentStock,
-          category: record.category ? { id: record.category.id } : null,
-          stockEditReason: values.reason, // KNOWN GAP: no backend column yet
-        });
-      } else {
-        await api.put(`/product-variants/${record.id}`, {
-          size: record.size,
-          producer: record.producer,
-          pricePerUnit: record.pricePerUnit,
-          currentStock: values.currentStock,
-          product: { id: record.product.id },
-          stockEditReason: values.reason, // KNOWN GAP: same as above
-        });
-      }
-      message.success("Stock updated.");
-      setStockModalOpen(false);
-      fetchAll();
-    } catch (err) {
-      if (err?.errorFields) return;
+    // CHANGED: was smuggling stockEditReason through updateProduct/updateVariant,
+    // which silently dropped it (no backend column). Now hits the real,
+    // dedicated endpoint that both applies the stock change AND logs it.
+    await api.post("/stock-adjustments", {
+      productId: type === "product" ? record.id : record.product.id,
+      productVariantId: type === "variant" ? record.id : null,
+      newStock: values.currentStock,
+      reason: values.reason,
+    });
+
+    message.success("Stock updated.");
+    setStockModalOpen(false);
+    fetchAll();
+  } catch (err) {
+    if (err?.errorFields) return;
+    if (err.response?.status === 403) {
+      message.error("Only a director can adjust stock.");
+    } else if (err.response?.status === 400) {
+      message.error(err.response.data?.message || "Invalid stock adjustment.");
+    } else {
       message.error("Failed to update stock.");
     }
-  };
+  }
+};
 
   // ---------------------------------------------------------------------
   // Column definitions — three levels: Category, Product, Variant
@@ -758,25 +774,49 @@ export default function ProductPage() {
 
       {/* Director-only stock edit modal */}
       <Modal
-        title="Edit Stock"
-        open={stockModalOpen}
-        onOk={handleStockSubmit}
-        onCancel={() => setStockModalOpen(false)}
-        destroyOnClose
-      >
-        <Form form={stockForm} layout="vertical">
-          <Form.Item name="currentStock" label="New Stock Value" rules={[{ required: true }]}>
-            <InputNumber style={{ width: "100%" }} min={0} />
-          </Form.Item>
-          <Form.Item
-            name="reason"
-            label="Reason for adjustment"
-            rules={[{ required: true, message: "A reason is required for manual stock edits." }]}
-          >
-            <Input.TextArea rows={3} placeholder="e.g. customer return, recount correction, damaged goods" />
-          </Form.Item>
-        </Form>
-      </Modal>
+  title="Edit Stock"
+  open={stockModalOpen}
+  onOk={handleStockSubmit}
+  onCancel={() => setStockModalOpen(false)}
+  destroyOnClose
+>
+  <Form form={stockForm} layout="vertical">
+    <Form.Item name="currentStock" label="New Stock Value" rules={[{ required: true }]}>
+      <InputNumber style={{ width: "100%" }} min={0} />
+    </Form.Item>
+    <Form.Item
+      name="reason"
+      label="Reason for adjustment"
+      rules={[{ required: true, message: "A reason is required for manual stock edits." }]}
+    >
+      <Input.TextArea rows={3} placeholder="e.g. customer return, recount correction, damaged goods" />
+    </Form.Item>
+  </Form>
+
+  {/* NEW: adjustment history for this product/variant */}
+  <Text strong>Adjustment history</Text>
+  <Table
+    style={{ marginTop: 8 }}
+    size="small"
+    loading={stockHistoryLoading}
+    dataSource={stockHistory}
+    rowKey="id"
+    pagination={false}
+    locale={{ emptyText: "No adjustments yet." }}
+    columns={[
+      { title: "Previous", dataIndex: "previousStock", key: "previousStock" },
+      { title: "New", dataIndex: "newStock", key: "newStock" },
+      { title: "Reason", dataIndex: "reason", key: "reason" },
+      { title: "By", dataIndex: "adjustedByName", key: "adjustedByName" },
+      {
+        title: "When",
+        dataIndex: "createdAt",
+        key: "createdAt",
+        render: (v) => new Date(v).toLocaleString(),
+      },
+    ]}
+  />
+</Modal>
     </div>
   );
 }
