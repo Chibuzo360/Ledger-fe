@@ -40,6 +40,24 @@ const SEARCH_FIELD_MAP = {
   4: { key: "amount", label: "Amount" },
 };
 
+// NEW: worst-case ranking used to derive ONE overall status for a
+// multi-item transaction. A transaction with 3 items where even one is
+// still owed is NOT "supplied" — it's "partially_supplied" — same logic
+// agreed on for the status filter.
+const STATUS_RANK = { supplied: 0, partially_supplied: 1, not_supplied: 2 };
+
+const SUPPLY_STATUS_COLOR = {
+  supplied: "green",
+  partially_supplied: "gold",
+  not_supplied: "red",
+};
+
+const SUPPLY_STATUS_LABEL = {
+  supplied: "SUPPLIED",
+  partially_supplied: "PARTIALLY SUPPLIED",
+  not_supplied: "NOT SUPPLIED",
+};
+
 const TransactionsPage = () => {
   const { user } = useAuth();
   const isDirector = user?.role === "director";
@@ -57,24 +75,19 @@ const TransactionsPage = () => {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState(null);
 
-  // NEW: product/variant catalog, needed to populate the sale cart's item
-  // picker. Fetched alongside transactions/retailers — a failure here is
-  // non-fatal to the rest of the page, since only the create-sale cart
-  // depends on it.
   const [products, setProducts] = useState([]);
   const [variants, setVariants] = useState([]);
 
-  // NEW: the sale cart. Plain state rather than an antd Form.List, since
-  // each line carries computed display fields (unitPrice, displayName)
-  // alongside the raw values — easier to reason about as ordinary objects
-  // than fighting Form.List's field-array API for something this shape.
+  // NEW: every TransactionItem across every transaction, fetched once via
+  // the existing (already-built) GET /api/transaction_item endpoint.
+  // Grouped client-side into a per-transaction overall status below —
+  // avoids an N+1 backend query per transaction row just to know whether
+  // each one is fully supplied.
+  const [allTransactionItems, setAllTransactionItems] = useState([]);
+
   const [cartItems, setCartItems] = useState([]);
   const [cartLineForm] = Form.useForm();
 
-  // NEW: discount feature. maxDiscount is the director-set global cap,
-  // fetched from the backend — never hardcoded, since it's meant to be
-  // changeable without a redeploy. discountCapModalOpen/-Form are for the
-  // small director-only "edit the cap" control.
   const [maxDiscount, setMaxDiscount] = useState(0);
   const [discountCapModalOpen, setDiscountCapModalOpen] = useState(false);
   const [discountCapForm] = Form.useForm();
@@ -91,29 +104,80 @@ const TransactionsPage = () => {
 
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [detailsTxn, setDetailsTxn] = useState(null);
-  // NEW: line items for whichever transaction Details is currently open on.
   const [detailsItems, setDetailsItems] = useState([]);
   const [detailsItemsLoading, setDetailsItemsLoading] = useState(false);
 
+  // NEW: "Supply remaining" modal — opened from a row inside Details.
+  const [supplyModalOpen, setSupplyModalOpen] = useState(false);
+  const [supplyTargetItem, setSupplyTargetItem] = useState(null);
+  const [supplySubmitting, setSupplySubmitting] = useState(false);
+  const [supplyForm] = Form.useForm();
+
+  // CHANGED: default filter mode/date now show TODAY on first load instead
+  // of an empty/all-time view — per your "one-day default everywhere"
+  // decision. filterMode stays "single" by default; singleDate starts on
+  // today's date rather than null.
   const [filterMode, setFilterMode] = useState("single");
-  const [singleDate, setSingleDate] = useState(null);
+  const [singleDate, setSingleDate] = useState(dayjs());
   const [dateRange, setDateRange] = useState(null);
+
+  // NEW: status filter — null means "no filter, show all statuses".
+  const [statusFilter, setStatusFilter] = useState(null);
 
   const [searchFieldKey, setSearchFieldKey] = useState(null);
   const [searchText, setSearchText] = useState("");
 
+  // NEW: groups allTransactionItems by transaction id, then reduces each
+  // group down to ONE overall status using the worst-case rule above.
+  // Transactions with no items at all (pre-cart-feature legacy rows, or a
+  // fetch race) fall back to "not_supplied" rather than crashing or being
+  // silently excluded from the filter.
+  const overallStatusByTxnId = useMemo(() => {
+    const grouped = {};
+    allTransactionItems.forEach((item) => {
+      const txnId = item.transaction?.id;
+      if (!txnId) return;
+      if (!grouped[txnId]) grouped[txnId] = [];
+      grouped[txnId].push(item.supplyStatus);
+    });
+
+    const result = {};
+    Object.entries(grouped).forEach(([txnId, statuses]) => {
+      const worst = statuses.reduce((worstSoFar, status) =>
+        (STATUS_RANK[status] ?? 2) > (STATUS_RANK[worstSoFar] ?? 2) ? status : worstSoFar,
+      "supplied");
+      result[txnId] = worst;
+    });
+    return result;
+  }, [allTransactionItems]);
+
+  // NEW: transactionRecord rows enriched with their derived overall supply
+  // status — a separate memo rather than baking this into fetchTransactions
+  // itself, since it depends on TWO independently-fetched datasets.
+  const transactionsWithStatus = useMemo(() => {
+    return transactionRecord.map((t) => ({
+      ...t,
+      supplyStatus: overallStatusByTxnId[t.id] ?? "not_supplied",
+    }));
+  }, [transactionRecord, overallStatusByTxnId]);
+
   const getFilteredTransactions = (transactions) => {
+    let result = transactions;
+
     if (filterMode === "single" && singleDate) {
-      return transactions.filter((t) =>
-        dayjs(t.date).isSame(singleDate, "day"),
-      );
-    }
-    if (filterMode === "range" && dateRange) {
-      return transactions.filter((t) =>
+      result = result.filter((t) => dayjs(t.date).isSame(singleDate, "day"));
+    } else if (filterMode === "range" && dateRange) {
+      result = result.filter((t) =>
         dayjs(t.date).isBetween(dateRange[0], dateRange[1], "day", "[]"),
       );
     }
-    return transactions;
+
+    // NEW: status filter, applied alongside the date filter.
+    if (statusFilter) {
+      result = result.filter((t) => t.supplyStatus === statusFilter);
+    }
+
+    return result;
   };
 
   const getSearchedTransactions = (transactions) => {
@@ -244,11 +308,19 @@ const TransactionsPage = () => {
     }
   };
 
-  // NEW: catalog fetch for the sale cart. Deliberately does not touch
-  // `errorMsg` (the page-level error banner) or `loading` (the main
-  // table's spinner) — a failure here shouldn't block viewing existing
-  // transactions, it should only affect the "Record New Sale" modal.
-  // NEW: director-only — view/edit the global discount cap.
+  // NEW: fetches every transaction item, used only to derive each
+  // transaction's overall supply status for the table/filter. Deliberately
+  // non-fatal on failure — the page still works without it, just without
+  // the status column/filter being meaningful (defaults to not_supplied).
+  const fetchAllTransactionItems = async () => {
+    try {
+      const res = await api.get("/transaction_item");
+      setAllTransactionItems(res.data);
+    } catch (error) {
+      setAllTransactionItems([]);
+    }
+  };
+
   const openDiscountCapModal = () => {
     discountCapForm.setFieldsValue({ maxDiscountAmount: maxDiscount });
     setDiscountCapModalOpen(true);
@@ -289,9 +361,6 @@ const TransactionsPage = () => {
     }
   };
 
-  // NEW: fetches the director-set discount cap. Non-fatal on failure —
-  // falls back to 0 (no discount allowed), which is a safe default rather
-  // than silently allowing an unbounded discount if this request fails.
   const fetchDiscountCap = async () => {
     try {
       const res = await api.get("/discount-settings");
@@ -306,15 +375,9 @@ const TransactionsPage = () => {
     fetchRetailers();
     fetchCatalog();
     fetchDiscountCap();
+    fetchAllTransactionItems(); // NEW
   }, []);
 
-  // NEW: flattens products + variants into one pickable list for the cart.
-  // A variant-less product (e.g. Binding Wire) becomes one option using the
-  // product's own price. A product WITH variants contributes one option per
-  // variant instead (using that variant's price), and the bare product
-  // itself is never directly sellable in that case — mirrors ProductsPage's
-  // own rule that a variant-having product's price/stock live on the
-  // variants, not the product row.
   const sellableOptions = useMemo(() => {
     const options = [];
     products.forEach((p) => {
@@ -346,11 +409,6 @@ const TransactionsPage = () => {
     return options;
   }, [products, variants]);
 
-  // NEW: adds one line to the cart from the mini "add item" form below.
-  // Per your decision, quantitySupplied defaults to the full
-  // quantityOrdered (assume it all leaves today) UNLESS "Partial today" is
-  // checked, in which case the worker enters the real supplied amount plus
-  // an optional note (e.g. "rest completed at Branch 2").
   const handleAddCartItem = async () => {
     try {
       const values = await cartLineForm.validateFields();
@@ -384,34 +442,14 @@ const TransactionsPage = () => {
     setCartItems((prev) => prev.filter((item) => item.key !== key));
   };
 
-  // Client-side estimate only, shown so the worker can see roughly what
-  // they're about to submit and check Amount Paid against it. The
-  // authoritative total is always recomputed server-side from real,
-  // current prices in TransactionsService.addTransaction() — this number
-  // is not sent to the backend at all.
   const cartTotal = cartItems.reduce(
     (sum, item) => sum + item.unitPrice * item.quantityOrdered,
     0,
   );
 
-  // NEW: live-watches the Discount field so the displayed total updates as
-  // the worker types, without needing a manual onChange/state pairing.
   const discountWatch = Form.useWatch("discountAmount", form) || 0;
   const amountAfterDiscount = Math.max(cartTotal - discountWatch, 0);
 
-  // CHANGED: totalAmount is no longer read from the form — it's not a form
-  // field anymore, it comes from the server's computation over `items`.
-  // The old `alreadyConfirmed` checkbox is gone too (see chat: it never
-  // actually worked, since addTransaction() always forced paymentStatus
-  // back to "pending" regardless of what it sent).
-  //
-  // CHANGED: this is now the entry point of a check-chain instead of doing
-  // the submit directly. Two things get checked, in order, before anything
-  // is sent: (1) is there a product picked in the "add item" row that never
-  // got clicked into the cart, and (2) does amountPaid exceed the estimated
-  // total. Both used to either silently do nothing (the unadded-line case)
-  // or hard-block with message.error (the over-cap case) — now both ask
-  // the worker to confirm instead, matching what was actually requested.
   const handleCreateTransaction = (values) => {
     if (cartItems.length === 0) {
       message.error("Add at least one item to the sale before saving.");
@@ -420,11 +458,6 @@ const TransactionsPage = () => {
 
     const discountAmount = values.discountAmount || 0;
 
-    // NEW: client-side mirror of the backend's own cap check — catches an
-    // obviously-over-cap entry before it round-trips to the server. This is
-    // a genuine block, not a confirm, because unlike the amountPaid check
-    // below, there's no legitimate reason a discount should ever exceed a
-    // director-set policy value — it's not a judgment call, it's a rule.
     if (discountAmount > maxDiscount) {
       message.error(
         `Discount can't exceed the approved cap of ₦${maxDiscount.toLocaleString()}.`,
@@ -436,23 +469,12 @@ const TransactionsPage = () => {
       return;
     }
 
-    // CHANGED: the amount-owed figure this checks against now accounts for
-    // the discount — otherwise a legitimately fully-paid discounted sale
-    // would incorrectly trigger the "are you sure" prompt below.
     const amountOwed = cartTotal - discountAmount;
 
     const pendingLineOption = cartLineForm.getFieldValue("sellableOption");
 
     const checkAmountThenSubmit = () => {
       if (values.amountPaid > amountOwed) {
-        // NEW: soft confirm, not a hard block. There's no backend-side cap
-        // on amountPaid at creation time (unlike confirmPayment, which DOES
-        // hard-reject overpayment — see the Update Payment handler below,
-        // which is deliberately NOT given this same "are you sure" escape
-        // hatch, because saying yes there would just guarantee a 400 from
-        // the backend). At creation, paying more than the computed total
-        // has plausible real reasons (e.g. a round-number cash deposit), so
-        // this is a genuine "confirm, don't block."
         Modal.confirm({
           title: "Amount paid is more than the total",
           content: `You entered ₦${values.amountPaid.toLocaleString()}, but the total after discount is ₦${amountOwed.toLocaleString()}. Are you sure this is correct?`,
@@ -466,9 +488,6 @@ const TransactionsPage = () => {
     };
 
     if (pendingLineOption) {
-      // NEW: this is the exact gap flagged when the cart was first built —
-      // a product picked in the mini "add item" form that never got its own
-      // "Add" click. Previously it just silently vanished on submit.
       Modal.confirm({
         title: "There's an item you haven't added yet",
         content:
@@ -489,7 +508,7 @@ const TransactionsPage = () => {
         customerName: values.customerName,
         customerPhone: values.customerPhone || null,
         amountPaid: values.amountPaid,
-        discountAmount, // NEW
+        discountAmount,
         retailerId: values.retailerId || null,
         items: cartItems.map((item) => ({
           productId: item.productId,
@@ -504,13 +523,12 @@ const TransactionsPage = () => {
       setCartItems([]);
       setIsModalOpen(false);
       fetchTransactions();
-      fetchCatalog(); // NEW: stock levels just changed — refresh so the next sale's cart reflects it
+      fetchAllTransactionItems(); // NEW: new items exist now, refresh status map
+      fetchCatalog();
     } catch (error) {
       if (!error.response) {
         message.error("Can't reach the server.");
       } else if (error.response.status === 409) {
-        // NEW: surfaces TransactionItemService's stock-sufficiency rejection
-        // instead of a generic failure message.
         message.error(
           error.response.data?.message || "Not enough stock for one of the items.",
         );
@@ -531,14 +549,6 @@ const TransactionsPage = () => {
     setIsPaymentModalOpen(true);
   };
 
-  // CHANGED: the `max` clamp on this form's InputNumber is gone too (see
-  // below), so this now needs its own explicit check. Unlike the create
-  // form above, this is NOT a "confirm to override" — confirmPayment()
-  // hard-rejects overpayment server-side with a 400 (that guard is real
-  // business logic: you can't pay more than what a specific, already-fixed
-  // invoice says is owed). Offering a "yes I'm sure, proceed" button here
-  // would just guarantee a rejected request one step later — so this stays
-  // a plain, clear message instead, not a confirm dialog.
   const handleConfirmPayment = async (values) => {
     if (values.amountPaid > selectedTxn.amount) {
       message.error(
@@ -577,6 +587,7 @@ const TransactionsPage = () => {
       await api.delete(`/transactions/${id}`);
       message.success("Transaction deleted.");
       fetchTransactions();
+      fetchAllTransactionItems(); // NEW: that transaction's items are gone too
     } catch (error) {
       if (!error.response) {
         message.error("Can't reach the server.");
@@ -629,22 +640,64 @@ const TransactionsPage = () => {
     });
   };
 
-  // CHANGED: now async — fetches this transaction's items from
-  // /transaction_item/transaction/{id} (an endpoint that already existed,
-  // just wasn't being used by the frontend) so Details can actually show
-  // what was bought, not just the header-level totals.
-  const openDetails = async (record) => {
-    setDetailsTxn(record);
-    setIsDetailsOpen(true);
+  // CHANGED: extracted into its own function so both openDetails() and the
+  // post-"Supply remaining" refresh can reuse the exact same fetch logic
+  // instead of duplicating it.
+  const loadDetailsItems = async (transactionId) => {
     setDetailsItemsLoading(true);
     try {
-      const res = await api.get(`/transaction_item/transaction/${record.id}`);
+      const res = await api.get(`/transaction_item/transaction/${transactionId}`);
       setDetailsItems(res.data);
     } catch (error) {
       message.error("Couldn't load the items for this transaction.");
       setDetailsItems([]);
     } finally {
       setDetailsItemsLoading(false);
+    }
+  };
+
+  const openDetails = async (record) => {
+    setDetailsTxn(record);
+    setIsDetailsOpen(true);
+    await loadDetailsItems(record.id);
+  };
+
+  // NEW: opens the small "how many more today" form for one line item.
+  const openSupplyModal = (item) => {
+    setSupplyTargetItem(item);
+    supplyForm.resetFields();
+    setSupplyModalOpen(true);
+  };
+
+  // NEW: submits the supply-remaining request, then refreshes everything
+  // that could now be stale — this item's row in Details, the page-level
+  // status map (so the filter/column stay correct), and the catalog (since
+  // stock just moved).
+  const handleSupplyRemaining = async (values) => {
+    setSupplySubmitting(true);
+    try {
+      await api.put(`/transaction_item/${supplyTargetItem.id}/supply`, {
+        additionalQuantity: values.additionalQuantity,
+        note: values.note || null,
+      });
+      message.success("Delivery updated.");
+      setSupplyModalOpen(false);
+      supplyForm.resetFields();
+      if (detailsTxn) await loadDetailsItems(detailsTxn.id);
+      fetchAllTransactionItems();
+      fetchCatalog();
+    } catch (error) {
+      if (!error.response) {
+        message.error("Can't reach the server.");
+      } else if (error.response.status === 409) {
+        message.error(error.response.data?.message || "Not enough stock for this item.");
+      } else if (error.response.status === 400) {
+        message.error(error.response.data?.message || "Invalid quantity.");
+      } else {
+        message.error("Failed to update delivery.");
+      }
+    } finally {
+      setSupplySubmitting(false);
     }
   };
 
@@ -711,6 +764,19 @@ const TransactionsPage = () => {
         </Tag>
       ),
     },
+    // NEW: delivery/supply status column — separate from payment status
+    // above. A sale can be fully PAID but only PARTIALLY SUPPLIED, or vice
+    // versa; conflating the two would hide real, actionable information.
+    {
+      title: "Supply",
+      dataIndex: "supplyStatus",
+      key: "supplyStatus",
+      render: (status) => (
+        <Tag color={SUPPLY_STATUS_COLOR[status] ?? "default"}>
+          {SUPPLY_STATUS_LABEL[status] ?? "—"}
+        </Tag>
+      ),
+    },
     {
       title: "Date",
       dataIndex: "date",
@@ -720,7 +786,7 @@ const TransactionsPage = () => {
     { title: "Actions", key: "actions", render: renderActions },
   ];
 
-  const dateFilteredTransactions = getFilteredTransactions(transactionRecord);
+  const dateFilteredTransactions = getFilteredTransactions(transactionsWithStatus);
   const tableTransactions = getSearchedTransactions(dateFilteredTransactions);
   const stats = computeStats(dateFilteredTransactions);
 
@@ -742,7 +808,6 @@ const TransactionsPage = () => {
           </Col>
           <Col>
             <Space>
-              {/* NEW: director-only view/edit of the global discount cap. */}
               {isDirector && (
                 <Button onClick={openDiscountCapModal}>
                   Discount Cap: ₦{maxDiscount.toLocaleString()}
@@ -828,6 +893,22 @@ const TransactionsPage = () => {
               allowClear
             />
           )}
+          <Divider orientation="vertical" />
+
+          {/* NEW: status filter dropdown. */}
+          <Select
+            allowClear
+            placeholder="Filter by supply status"
+            style={{ width: 200 }}
+            value={statusFilter}
+            onChange={(val) => setStatusFilter(val ?? null)}
+            options={[
+              { value: "not_supplied", label: "Not Supplied" },
+              { value: "partially_supplied", label: "Partially Supplied" },
+              { value: "supplied", label: "Supplied" },
+            ]}
+          />
+
           <Col>
             <Dropdown
               menu={{
@@ -877,7 +958,7 @@ const TransactionsPage = () => {
         onCancel={() => {
           setIsModalOpen(false);
           form.resetFields();
-          setCartItems([]); // clear the cart along with the rest of the form
+          setCartItems([]);
           cartLineForm.resetFields();
         }}
         footer={null}
@@ -908,12 +989,6 @@ const TransactionsPage = () => {
 
           <Divider>Items</Divider>
 
-          {/* NEW: cart line "mini form". component={false} stops antd from
-              rendering an actual <form> element here — nesting a real <form>
-              inside the outer <Form>'s own <form> tag is invalid HTML and
-              can cause unpredictable Enter-key/submit behavior. This way it
-              still gets full Form validation/state, just without the
-              DOM-level nesting problem. */}
           <Form form={cartLineForm} layout="vertical" component={false}>
             <Row gutter={8}>
               <Col span={24} md={10}>
@@ -951,12 +1026,6 @@ const TransactionsPage = () => {
               </Col>
             </Row>
 
-            {/* Only shown when "Partial today" is checked. Lets the worker
-                record the real quantity leaving today plus why — e.g. the
-                customer is completing the rest of the order at another
-                branch, per your earlier "simple flagging" decision. This
-                never triggers a per-branch stock check; it's informational
-                only, and stock still only ever moves by quantitySupplied. */}
             <Form.Item
               noStyle
               shouldUpdate={(prev, cur) => prev.partialSupply !== cur.partialSupply}
@@ -1025,11 +1094,6 @@ const TransactionsPage = () => {
             </Text>
           </div>
 
-          {/* NEW: discount field. Capped visually to whichever is smaller —
-              the director-set global cap, or the sale's own subtotal (can't
-              discount more than the sale is worth). The real enforcement
-              against the cap happens server-side in addTransaction(); this
-              is just to stop an obviously-wrong entry before it's typed. */}
           <Form.Item
             label={`Discount (₦) — up to ₦${Math.min(maxDiscount, cartTotal).toLocaleString()}`}
             name="discountAmount"
@@ -1042,12 +1106,6 @@ const TransactionsPage = () => {
             />
           </Form.Item>
 
-          {/* CHANGED: "Total Amount" field removed — it's server-computed
-              now, not typed. Amount Paid's `max` clamp is gone too — it used
-              to silently snap the typed value down to cartTotal on blur with
-              no explanation. Over-cap entries are now caught in
-              handleCreateTransaction's confirm chain instead, which tells
-              the worker by how much and asks them to confirm. */}
           <Form.Item
             label="Amount Paid (₦)"
             name="amountPaid"
@@ -1064,7 +1122,6 @@ const TransactionsPage = () => {
         </Form>
       </Modal>
 
-      {/* NEW: director-only — view/edit the global discount cap. */}
       <Modal
         title="Discount Cap"
         open={discountCapModalOpen}
@@ -1178,10 +1235,6 @@ const TransactionsPage = () => {
           </Descriptions>
         )}
 
-        {/* NEW: what was actually bought. Falls back gracefully on a
-            transaction recorded before items existed at all (an empty
-            list, not an error) — the emptyText makes that distinction
-            clear instead of it looking like a loading failure. */}
         <Divider>Items Purchased</Divider>
         <Table
           size="small"
@@ -1206,16 +1259,8 @@ const TransactionsPage = () => {
               dataIndex: "supplyStatus",
               key: "supplyStatus",
               render: (status) => (
-                <Tag
-                  color={
-                    status === "supplied"
-                      ? "green"
-                      : status === "partially_supplied"
-                        ? "gold"
-                        : "red"
-                  }
-                >
-                  {(status ?? "").replace("_", " ").toUpperCase()}
+                <Tag color={SUPPLY_STATUS_COLOR[status] ?? "default"}>
+                  {SUPPLY_STATUS_LABEL[status] ?? (status ?? "").replace("_", " ").toUpperCase()}
                 </Tag>
               ),
             },
@@ -1225,8 +1270,75 @@ const TransactionsPage = () => {
               key: "supplyNote",
               render: (note) => note || "—",
             },
+            // NEW: "Supply remaining" action — only shown when this item
+            // still owes units. Nothing to do once a line is fully supplied.
+            {
+              title: "",
+              key: "supplyAction",
+              render: (_, item) =>
+                item.supplyStatus !== "supplied" ? (
+                  <Button size="small" onClick={() => openSupplyModal(item)}>
+                    Supply remaining
+                  </Button>
+                ) : null,
+            },
           ]}
         />
+      </Modal>
+
+      {/* NEW: "Supply remaining" modal — records that more units of a
+          previously partial delivery have now gone out. */}
+      <Modal
+        title={
+          supplyTargetItem
+            ? `Supply remaining — ${
+                supplyTargetItem.productVariant
+                  ? `${supplyTargetItem.product?.name ?? ""} (${supplyTargetItem.productVariant.producer ?? ""} ${supplyTargetItem.productVariant.size ?? ""})`
+                  : supplyTargetItem.product?.name ?? ""
+              }`
+            : "Supply remaining"
+        }
+        open={supplyModalOpen}
+        onCancel={() => setSupplyModalOpen(false)}
+        footer={null}
+        destroyOnClose
+      >
+        {supplyTargetItem && (
+          <Text type="secondary">
+            {supplyTargetItem.quantitySupplied} of {supplyTargetItem.quantityOrdered} supplied so far —{" "}
+            {supplyTargetItem.quantityOrdered - supplyTargetItem.quantitySupplied} still owed.
+          </Text>
+        )}
+        <Form
+          form={supplyForm}
+          layout="vertical"
+          onFinish={handleSupplyRemaining}
+          style={{ marginTop: 16 }}
+        >
+          <Form.Item
+            label="How many more are leaving today?"
+            name="additionalQuantity"
+            rules={[{ required: true, message: "Quantity is required" }]}
+          >
+            <InputNumber
+              min={1}
+              max={
+                supplyTargetItem
+                  ? supplyTargetItem.quantityOrdered - supplyTargetItem.quantitySupplied
+                  : undefined
+              }
+              style={{ width: "100%" }}
+            />
+          </Form.Item>
+          <Form.Item label="Note (optional)" name="note">
+            <Input placeholder="e.g. remainder arrived from supplier today" />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={supplySubmitting} block>
+              Confirm Delivery
+            </Button>
+          </Form.Item>
+        </Form>
       </Modal>
     </div>
   );

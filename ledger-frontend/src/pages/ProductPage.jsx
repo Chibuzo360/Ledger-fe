@@ -811,7 +811,7 @@ const openStockEdit = async (type, record) => {
       {
         title: "When",
         dataIndex: "createdAt",
-        key: "createdAt",
+        key: "createdAt", 
         render: (v) => new Date(v).toLocaleString(),
       },
     ]}
