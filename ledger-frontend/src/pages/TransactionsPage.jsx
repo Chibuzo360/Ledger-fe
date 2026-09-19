@@ -21,6 +21,7 @@ import {
   DatePicker,
   Segmented,
   Select,
+  Switch,
 } from "antd";
 import { DownOutlined, MoreOutlined, PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import { useAuth } from "../context/AuthContext";
@@ -33,17 +34,37 @@ dayjs.extend(isBetween);
 
 const { Title, Text } = Typography;
 
+// CHANGED: added key 5 ("Payment Status") for the new search-by-status
+// requirement. Searches the same "status" field the table column already
+// reads (paymentStatus: pending/confirmed) -- deliberately NOT the supply
+// status, which already has its own dedicated exact-match dropdown filter
+// rather than free-text search.
 const SEARCH_FIELD_MAP = {
   1: { key: "id", label: "Transaction ID" },
   2: { key: "customer", label: "Customer Name" },
   3: { key: "customerPhone", label: "Customer Phone" },
   4: { key: "amount", label: "Amount" },
+  5: { key: "status", label: "Payment Status" },
 };
 
-// NEW: worst-case ranking used to derive ONE overall status for a
-// multi-item transaction. A transaction with 3 items where even one is
-// still owed is NOT "supplied" — it's "partially_supplied" — same logic
-// agreed on for the status filter.
+// NEW: the payment methods a clerk directly witnesses -- matches
+// TransactionsService.WITNESSED_METHODS exactly. Only these three ever
+// show the "mark as confirmed now" option on the Add Sale form.
+const WITNESSED_METHODS = ["CASH", "POS_TRANSFER", "POS_CARD"];
+
+const PAYMENT_METHOD_OPTIONS = [
+  { value: "CASH", label: "Cash" },
+  { value: "POS_TRANSFER", label: "POS - Transfer" },
+  { value: "POS_CARD", label: "POS - Card" },
+  { value: "BUSINESS_ACCOUNT", label: "Business Account (Director)" },
+  { value: "MIXED", label: "Mixed (multiple methods)" },
+];
+
+const PAYMENT_METHOD_LABEL = PAYMENT_METHOD_OPTIONS.reduce((acc, opt) => {
+  acc[opt.value] = opt.label;
+  return acc;
+}, {});
+
 const STATUS_RANK = { supplied: 0, partially_supplied: 1, not_supplied: 2 };
 
 const SUPPLY_STATUS_COLOR = {
@@ -67,6 +88,7 @@ const TransactionsPage = () => {
     { key: 2, label: "CustomerName" },
     { key: 3, label: "CustomerPhone" },
     { key: 4, label: "Amount" },
+    { key: 5, label: "Payment Status" }, // NEW
   ];
 
   const [transactionRecord, setTransactionRecord] = useState([]);
@@ -78,17 +100,17 @@ const TransactionsPage = () => {
   const [products, setProducts] = useState([]);
   const [variants, setVariants] = useState([]);
 
-  // NEW: every TransactionItem across every transaction, fetched once via
-  // the existing (already-built) GET /api/transaction_item endpoint.
-  // Grouped client-side into a per-transaction overall status below —
-  // avoids an N+1 backend query per transaction row just to know whether
-  // each one is fully supplied.
   const [allTransactionItems, setAllTransactionItems] = useState([]);
 
   const [cartItems, setCartItems] = useState([]);
   const [cartLineForm] = Form.useForm();
 
   const [maxDiscount, setMaxDiscount] = useState(0);
+  // NEW: worker-confirmation toggle state, fetched/updated alongside the
+  // discount cap since both live on the same DiscountSettings row.
+  const [allowWorkerConfirmation, setAllowWorkerConfirmation] = useState(false);
+  const [workerToggleSubmitting, setWorkerToggleSubmitting] = useState(false);
+
   const [discountCapModalOpen, setDiscountCapModalOpen] = useState(false);
   const [discountCapForm] = Form.useForm();
   const [discountCapSubmitting, setDiscountCapSubmitting] = useState(false);
@@ -107,31 +129,20 @@ const TransactionsPage = () => {
   const [detailsItems, setDetailsItems] = useState([]);
   const [detailsItemsLoading, setDetailsItemsLoading] = useState(false);
 
-  // NEW: "Supply remaining" modal — opened from a row inside Details.
   const [supplyModalOpen, setSupplyModalOpen] = useState(false);
   const [supplyTargetItem, setSupplyTargetItem] = useState(null);
   const [supplySubmitting, setSupplySubmitting] = useState(false);
   const [supplyForm] = Form.useForm();
 
-  // CHANGED: default filter mode/date now show TODAY on first load instead
-  // of an empty/all-time view — per your "one-day default everywhere"
-  // decision. filterMode stays "single" by default; singleDate starts on
-  // today's date rather than null.
   const [filterMode, setFilterMode] = useState("single");
   const [singleDate, setSingleDate] = useState(dayjs());
   const [dateRange, setDateRange] = useState(null);
 
-  // NEW: status filter — null means "no filter, show all statuses".
   const [statusFilter, setStatusFilter] = useState(null);
 
   const [searchFieldKey, setSearchFieldKey] = useState(null);
   const [searchText, setSearchText] = useState("");
 
-  // NEW: groups allTransactionItems by transaction id, then reduces each
-  // group down to ONE overall status using the worst-case rule above.
-  // Transactions with no items at all (pre-cart-feature legacy rows, or a
-  // fetch race) fall back to "not_supplied" rather than crashing or being
-  // silently excluded from the filter.
   const overallStatusByTxnId = useMemo(() => {
     const grouped = {};
     allTransactionItems.forEach((item) => {
@@ -151,9 +162,6 @@ const TransactionsPage = () => {
     return result;
   }, [allTransactionItems]);
 
-  // NEW: transactionRecord rows enriched with their derived overall supply
-  // status — a separate memo rather than baking this into fetchTransactions
-  // itself, since it depends on TWO independently-fetched datasets.
   const transactionsWithStatus = useMemo(() => {
     return transactionRecord.map((t) => ({
       ...t,
@@ -172,7 +180,6 @@ const TransactionsPage = () => {
       );
     }
 
-    // NEW: status filter, applied alongside the date filter.
     if (statusFilter) {
       result = result.filter((t) => t.supplyStatus === statusFilter);
     }
@@ -198,7 +205,8 @@ const TransactionsPage = () => {
         String(t.id).includes(text) ||
         (t.customer ?? "").toLowerCase().includes(text) ||
         (t.customerPhone ?? "").toLowerCase().includes(text) ||
-        String(t.amount).includes(text),
+        String(t.amount).includes(text) ||
+        (t.status ?? "").toLowerCase().includes(text), // NEW: status now included in the "search all fields" fallback too
     );
   };
 
@@ -267,6 +275,8 @@ const TransactionsPage = () => {
         confirmedBy: txn.confirmedBy?.name ?? "—",
         confirmedAt: txn.confirmedAt,
         paymentProof: txn.paymentProof,
+        paymentMethod: txn.paymentMethod ?? null, // NEW
+        paymentMethodNote: txn.paymentMethodNote ?? null, // NEW
       }));
       setTransactionRecord(mapped);
     } catch (error) {
@@ -308,10 +318,6 @@ const TransactionsPage = () => {
     }
   };
 
-  // NEW: fetches every transaction item, used only to derive each
-  // transaction's overall supply status for the table/filter. Deliberately
-  // non-fatal on failure — the page still works without it, just without
-  // the status column/filter being meaningful (defaults to not_supplied).
   const fetchAllTransactionItems = async () => {
     try {
       const res = await api.get("/transaction_item");
@@ -348,6 +354,35 @@ const TransactionsPage = () => {
     }
   };
 
+  // NEW: director-only toggle -- lets workers confirm witnessed-method
+  // payments when the director isn't around. Separate endpoint from the
+  // discount cap update, so the two settings never interfere with each
+  // other.
+  const handleToggleWorkerConfirmation = async (checked) => {
+    setWorkerToggleSubmitting(true);
+    try {
+      const res = await api.put("/discount-settings/worker-confirmation", {
+        allowWorkerConfirmation: checked,
+      });
+      setAllowWorkerConfirmation(Boolean(res.data.allowWorkerConfirmation));
+      message.success(
+        checked
+          ? "Workers can now confirm cash/POS payments."
+          : "Worker confirmation turned off — only you can confirm payments now.",
+      );
+    } catch (error) {
+      if (!error.response) {
+        message.error("Can't reach the server.");
+      } else if (error.response.status === 403) {
+        message.error("Only a director can change this setting.");
+      } else {
+        message.error("Failed to update setting.");
+      }
+    } finally {
+      setWorkerToggleSubmitting(false);
+    }
+  };
+
   const fetchCatalog = async () => {
     try {
       const [productsRes, variantsRes] = await Promise.all([
@@ -361,12 +396,16 @@ const TransactionsPage = () => {
     }
   };
 
+  // CHANGED: now also reads allowWorkerConfirmation off the same response
+  // -- one settings object holds both the discount cap and this toggle.
   const fetchDiscountCap = async () => {
     try {
       const res = await api.get("/discount-settings");
       setMaxDiscount(res.data.maxDiscountAmount ?? 0);
+      setAllowWorkerConfirmation(Boolean(res.data.allowWorkerConfirmation));
     } catch (error) {
       setMaxDiscount(0);
+      setAllowWorkerConfirmation(false);
     }
   };
 
@@ -375,7 +414,7 @@ const TransactionsPage = () => {
     fetchRetailers();
     fetchCatalog();
     fetchDiscountCap();
-    fetchAllTransactionItems(); // NEW
+    fetchAllTransactionItems();
   }, []);
 
   const sellableOptions = useMemo(() => {
@@ -450,6 +489,13 @@ const TransactionsPage = () => {
   const discountWatch = Form.useWatch("discountAmount", form) || 0;
   const amountAfterDiscount = Math.max(cartTotal - discountWatch, 0);
 
+  // NEW: watches the payment method field so the form can conditionally
+  // show the confirm-toggle (witnessed methods) or the breakdown note
+  // (Mixed) without a full re-render dance.
+  const paymentMethodWatch = Form.useWatch("paymentMethod", form);
+  const isWitnessedMethod = WITNESSED_METHODS.includes(paymentMethodWatch);
+  const isMixedMethod = paymentMethodWatch === "MIXED";
+
   const handleCreateTransaction = (values) => {
     if (cartItems.length === 0) {
       message.error("Add at least one item to the sale before saving.");
@@ -466,6 +512,17 @@ const TransactionsPage = () => {
     }
     if (discountAmount > cartTotal) {
       message.error("Discount can't exceed the sale's total.");
+      return;
+    }
+
+    // NEW: required-field guard for payment method, mirroring the backend
+    // validation -- catches the obvious miss before a round trip.
+    if (!values.paymentMethod) {
+      message.error("Select a payment method before saving.");
+      return;
+    }
+    if (values.paymentMethod === "MIXED" && !values.paymentMethodNote?.trim()) {
+      message.error("Add a breakdown note for a Mixed payment (e.g. ₦10,000 POS + ₦10,000 cash).");
       return;
     }
 
@@ -517,13 +574,19 @@ const TransactionsPage = () => {
           quantitySupplied: item.quantitySupplied,
           supplyNote: item.supplyNote,
         })),
+        // NEW
+        paymentMethod: values.paymentMethod,
+        paymentMethodNote: values.paymentMethod === "MIXED" ? values.paymentMethodNote : null,
+        confirmedAtCreation: WITNESSED_METHODS.includes(values.paymentMethod)
+          ? Boolean(values.confirmedAtCreation)
+          : false,
       });
       message.success("Transaction recorded!");
       form.resetFields();
       setCartItems([]);
       setIsModalOpen(false);
       fetchTransactions();
-      fetchAllTransactionItems(); // NEW: new items exist now, refresh status map
+      fetchAllTransactionItems();
       fetchCatalog();
     } catch (error) {
       if (!error.response) {
@@ -532,6 +595,9 @@ const TransactionsPage = () => {
         message.error(
           error.response.data?.message || "Not enough stock for one of the items.",
         );
+      } else if (error.response.status === 400) {
+        // NEW: surfaces the backend's payment-method validation messages
+        message.error(error.response.data?.message || "Invalid transaction.");
       } else {
         message.error(`Failed to save: ${error.response.status}`);
       }
@@ -569,6 +635,13 @@ const TransactionsPage = () => {
     } catch (error) {
       if (!error.response) {
         message.error("Can't reach the server.");
+      } else if (error.response.status === 403) {
+        // NEW: specific message for the new confirm-permission gate,
+        // instead of falling through to the generic branch below.
+        message.error(
+          error.response.data?.message ||
+            "You're not allowed to confirm this payment — ask a director.",
+        );
       } else {
         const backendMsg = error.response.data?.message || error.response.data;
         message.error(
@@ -587,7 +660,7 @@ const TransactionsPage = () => {
       await api.delete(`/transactions/${id}`);
       message.success("Transaction deleted.");
       fetchTransactions();
-      fetchAllTransactionItems(); // NEW: that transaction's items are gone too
+      fetchAllTransactionItems();
     } catch (error) {
       if (!error.response) {
         message.error("Can't reach the server.");
@@ -640,9 +713,6 @@ const TransactionsPage = () => {
     });
   };
 
-  // CHANGED: extracted into its own function so both openDetails() and the
-  // post-"Supply remaining" refresh can reuse the exact same fetch logic
-  // instead of duplicating it.
   const loadDetailsItems = async (transactionId) => {
     setDetailsItemsLoading(true);
     try {
@@ -662,17 +732,12 @@ const TransactionsPage = () => {
     await loadDetailsItems(record.id);
   };
 
-  // NEW: opens the small "how many more today" form for one line item.
   const openSupplyModal = (item) => {
     setSupplyTargetItem(item);
     supplyForm.resetFields();
     setSupplyModalOpen(true);
   };
 
-  // NEW: submits the supply-remaining request, then refreshes everything
-  // that could now be stale — this item's row in Details, the page-level
-  // status map (so the filter/column stay correct), and the catalog (since
-  // stock just moved).
   const handleSupplyRemaining = async (values) => {
     setSupplySubmitting(true);
     try {
@@ -764,9 +829,15 @@ const TransactionsPage = () => {
         </Tag>
       ),
     },
-    // NEW: delivery/supply status column — separate from payment status
-    // above. A sale can be fully PAID but only PARTIALLY SUPPLIED, or vice
-    // versa; conflating the two would hide real, actionable information.
+    // NEW: payment method column -- visible proof the feature works, and
+    // useful on its own (a director scanning for business-account
+    // transfers that still need a phone-call check).
+    {
+      title: "Method",
+      dataIndex: "paymentMethod",
+      key: "paymentMethod",
+      render: (method) => PAYMENT_METHOD_LABEL[method] ?? "—",
+    },
     {
       title: "Supply",
       dataIndex: "supplyStatus",
@@ -807,7 +878,20 @@ const TransactionsPage = () => {
             </Text>
           </Col>
           <Col>
-            <Space>
+            <Space wrap>
+              {/* NEW: director-only worker-confirmation toggle. */}
+              {isDirector && (
+                <Space size="small">
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    Workers can confirm cash/POS
+                  </Text>
+                  <Switch
+                    checked={allowWorkerConfirmation}
+                    onChange={handleToggleWorkerConfirmation}
+                    loading={workerToggleSubmitting}
+                  />
+                </Space>
+              )}
               {isDirector && (
                 <Button onClick={openDiscountCapModal}>
                   Discount Cap: ₦{maxDiscount.toLocaleString()}
@@ -895,7 +979,6 @@ const TransactionsPage = () => {
           )}
           <Divider orientation="vertical" />
 
-          {/* NEW: status filter dropdown. */}
           <Select
             allowClear
             placeholder="Filter by supply status"
@@ -986,6 +1069,36 @@ const TransactionsPage = () => {
           <Form.Item label="Customer Phone" name="customerPhone">
             <Input placeholder="Optional" />
           </Form.Item>
+
+          {/* NEW: required payment method field. */}
+          <Form.Item
+            label="Payment Method"
+            name="paymentMethod"
+            rules={[{ required: true, message: "Payment method is required" }]}
+          >
+            <Select placeholder="How is the customer paying?" options={PAYMENT_METHOD_OPTIONS} />
+          </Form.Item>
+
+          {/* NEW: only shown for a witnessed method (cash/POS) -- the
+              clerk directly saw it succeed, so they can mark it confirmed
+              right now instead of waiting on the director. */}
+          {isWitnessedMethod && (
+            <Form.Item name="confirmedAtCreation" valuePropName="checked">
+              <Checkbox>I witnessed this payment succeed — mark as confirmed now</Checkbox>
+            </Form.Item>
+          )}
+
+          {/* NEW: only shown for Mixed -- a free-text breakdown, since the
+              system doesn't track split payments as structured data. */}
+          {isMixedMethod && (
+            <Form.Item
+              label="Payment breakdown"
+              name="paymentMethodNote"
+              rules={[{ required: true, message: "Describe how the payment was split" }]}
+            >
+              <Input placeholder="e.g. ₦10,000 POS transfer + ₦10,000 cash" />
+            </Form.Item>
+          )}
 
           <Divider>Items</Divider>
 
@@ -1214,6 +1327,14 @@ const TransactionsPage = () => {
             <Descriptions.Item label="Payment Type">
               {detailsTxn.type}
             </Descriptions.Item>
+            <Descriptions.Item label="Payment Method">
+              {PAYMENT_METHOD_LABEL[detailsTxn.paymentMethod] ?? "—"}
+            </Descriptions.Item>
+            {detailsTxn.paymentMethodNote && (
+              <Descriptions.Item label="Payment Breakdown">
+                {detailsTxn.paymentMethodNote}
+              </Descriptions.Item>
+            )}
             <Descriptions.Item label="Status">
               {detailsTxn.status}
             </Descriptions.Item>
@@ -1270,8 +1391,6 @@ const TransactionsPage = () => {
               key: "supplyNote",
               render: (note) => note || "—",
             },
-            // NEW: "Supply remaining" action — only shown when this item
-            // still owes units. Nothing to do once a line is fully supplied.
             {
               title: "",
               key: "supplyAction",
@@ -1286,8 +1405,6 @@ const TransactionsPage = () => {
         />
       </Modal>
 
-      {/* NEW: "Supply remaining" modal — records that more units of a
-          previously partial delivery have now gone out. */}
       <Modal
         title={
           supplyTargetItem
