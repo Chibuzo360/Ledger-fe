@@ -665,7 +665,7 @@ const TransactionsPage = () => {
       if (!error.response) {
         message.error("Can't reach the server.");
       } else if (error.response.status === 403) {
-        message.error("Only a director can delete a confirmed transaction.");
+        message.error("Only a director can delete a transaction.");
       } else {
         message.error(`Failed to delete: ${error.response.status}`);
       }
@@ -769,11 +769,23 @@ const TransactionsPage = () => {
   const renderActions = (_, record) => {
     const items = [{ key: "details", label: "Details" }];
 
-    if (record.status !== "confirmed") {
+    const isFullySettled = record.status === "confirmed" && record.amountPaid >= record.amount;
+
+    if (!isFullySettled) {
       items.push({ key: "update", label: "Update Payment" });
-      items.push({ key: "delete", label: "Delete", danger: true });
-    } else if (isDirector) {
-      items.push({ key: "delete", label: "Delete (confirmed)", danger: true });
+    }
+
+    // CHANGED: delete is now director-only, full stop — workers lost this
+    // action entirely (they gained edit-while-unconfirmed instead, per the
+    // settled decision). The light/heavy confirm split still applies, but
+    // only within what a director sees: a light confirm for an unconfirmed
+    // transaction, the typed-DELETE heavy confirm for a confirmed one.
+    if (isDirector) {
+      items.push({
+        key: "delete",
+        label: record.status === "confirmed" ? "Delete (confirmed)" : "Delete",
+        danger: true,
+      });
     }
 
     const onClick = ({ key }) => {
@@ -1028,7 +1040,7 @@ const TransactionsPage = () => {
               dataSource={tableTransactions}
               columns={columns}
               pagination={false}
-              scroll={{ x: true }}
+              scroll={{ x: true, y: 480 }}
               loading={loading}
             />
           </Card>

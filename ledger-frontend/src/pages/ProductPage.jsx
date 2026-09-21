@@ -23,19 +23,10 @@ import { useAuth } from "../context/AuthContext";
 const { Title, Text } = Typography;
 
 const CREATE_NEW_VALUE = "__create_new__";
-// Sentinel id for the synthetic "Uncategorized" row. Never sent to the
-// backend — it only exists so the frontend has something to key/render
-// products whose `category` is null (or whose category was just deleted
-// and got orphaned by ProductCategoryService.deleteProductCategory()).
 const UNCATEGORIZED_ID = "__uncategorized__";
 
-// Title-cases a category name — "building materials" -> "Building Materials".
-// Applied everywhere a category name is created or renamed, so naming stays
-// consistent no matter how it was typed.
-// KNOWN LIMITATION: this also lowercases the rest of each word, so a real
-// acronym like "PVC" becomes "Pvc". No simple rule can tell "caps lock was
-// on by accident" from "this is meant to be an acronym" — flagging rather
-// than hiding it.
+// Submit-time capitalizer -- still used to normalize search text when
+// creating a category inline from the product form's Select.
 const capitalizeWords = (str) =>
   str
     .trim()
@@ -43,6 +34,24 @@ const capitalizeWords = (str) =>
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(" ");
+
+// NEW: live-as-you-type capitalizer for the Add/Rename Category modal's
+// Input. Deliberately does NOT trim or collapse whitespace like
+// capitalizeWords above -- doing that live would strip the trailing space
+// the instant you finish a word, making it impossible to type a second
+// word. Instead it walks the string in whitespace/non-whitespace chunks,
+// capitalizing the first letter of each word-chunk and lowercasing the
+// rest, while preserving every space exactly as typed.
+const liveCapitalize = (str) => {
+  if (!str) return str;
+  return str
+    .split(/(\s+)/)
+    .map((token) => {
+      if (/^\s+$/.test(token)) return token;
+      return token.charAt(0).toUpperCase() + token.slice(1).toLowerCase();
+    })
+    .join("");
+};
 
 export default function ProductPage() {
   const { user } = useAuth();
@@ -54,34 +63,27 @@ export default function ProductPage() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
 
-  // --- Add/Edit Product modal ---
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
-  // Which category row "Add Product" was clicked from. Only used in add
-  // mode — the product form no longer has a category field to read this
-  // from, since category is scoped by context instead of picked in-form.
   const [addTargetCategory, setAddTargetCategory] = useState(null);
   const [productForm] = Form.useForm();
   const [categorySearch, setCategorySearch] = useState("");
 
-  // --- Add/Rename Category modal ---
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
-  const [editingCategory, setEditingCategory] = useState(null); // null = add mode
+  const [editingCategory, setEditingCategory] = useState(null);
   const [categoryForm] = Form.useForm();
 
-  // --- Add/Edit Variant modal ---
   const [variantModalOpen, setVariantModalOpen] = useState(false);
   const [editingVariant, setEditingVariant] = useState(null);
   const [variantParentProduct, setVariantParentProduct] = useState(null);
   const [variantForm] = Form.useForm();
 
-  // --- Director-only stock edit modal ---
-  // NEW: shows past adjustments for whatever product/variant is currently open
-const [stockHistory, setStockHistory] = useState([]);
-const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
   const [stockModalOpen, setStockModalOpen] = useState(false);
-  const [stockTarget, setStockTarget] = useState(null); // { type: 'product' | 'variant', record }
+  const [stockTarget, setStockTarget] = useState(null);
   const [stockForm] = Form.useForm();
+
+  const [stockHistory, setStockHistory] = useState([]);
+  const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -110,14 +112,6 @@ const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
     fetchAll();
   }, []);
 
-  // ---------------------------------------------------------------------
-  // Three-level grouping: one row per Category — INCLUDING empty ones, so
-  // a freshly-created category is visible immediately with "Add Product"
-  // already scoped to it — each carrying its own `products` array, each
-  // product carrying its own `variants` array. A synthetic "Uncategorized"
-  // row is appended only when at least one product actually has no
-  // category — it's never a real row you can rename/delete/add into.
-  // ---------------------------------------------------------------------
   const categoryRows = useMemo(() => {
     const byId = new Map();
     categories.forEach((cat) => {
@@ -151,14 +145,6 @@ const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
     return rows;
   }, [categories, products, variants]);
 
-  // ---------------------------------------------------------------------
-  // Category <Select> options — used ONLY in the Edit Product modal now.
-  // Add Product has no category field at all (category comes from which
-  // category row you clicked "Add Product" on), and top-level category
-  // creation goes through the dedicated Add Category modal. This Select
-  // stays in Edit mode because a director may want to move an existing
-  // product to a category that doesn't exist yet.
-  // ---------------------------------------------------------------------
   const categoryOptions = useMemo(() => {
     const search = categorySearch.trim();
     const filtered = search
@@ -174,22 +160,6 @@ const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
     return base;
   }, [categories, categorySearch]);
 
-  // ---------------------------------------------------------------------
-  // BUG FIX: previously, selecting "+ Create ..." just stored the
-  // CREATE_NEW_VALUE sentinel in the form and deferred actual creation
-  // until form submit. That meant the Select kept displaying the "+
-  // Create "x"" option's own label as its selected text for as long as
-  // the modal stayed open, and `categorySearch` never got reset — so
-  // reopening the dropdown started from that stale leftover text, and new
-  // keystrokes landed after it instead of replacing it. That's the "box
-  // fills with Create..., then my typed letters" glitch.
-  //
-  // Fix: create the category immediately, right here, the moment it's
-  // selected — swap the sentinel out for the real new category's id
-  // straight away — and always clear categorySearch after ANY selection
-  // (not just the create-new case), so the Select never has stale search
-  // text to fall back on.
-  // ---------------------------------------------------------------------
   const handleCategorySelectChange = async (value) => {
     if (value === CREATE_NEW_VALUE) {
       const name = capitalizeWords(categorySearch);
@@ -210,9 +180,6 @@ const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
     setCategorySearch("");
   };
 
-  // ---------------------------------------------------------------------
-  // Product modal handlers
-  // ---------------------------------------------------------------------
   const openAddProduct = (categoryRow) => {
     setEditingProduct(null);
     setAddTargetCategory(categoryRow);
@@ -238,13 +205,6 @@ const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
   const handleProductSubmit = async () => {
     try {
       const values = await productForm.validateFields();
-
-      // In add mode there's no categoryId form field (it's hidden — see
-      // the Modal JSX below), so the category comes from whichever
-      // category row "Add Product" was clicked on. In edit mode it comes
-      // from the Select, and by now it's always a real id — never the
-      // CREATE_NEW_VALUE sentinel, since that gets resolved immediately in
-      // handleCategorySelectChange above, not deferred to submit time.
       const categoryId = editingProduct ? values.categoryId : addTargetCategory?.id;
 
       const payload = {
@@ -295,10 +255,6 @@ const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
     }
   };
 
-  // ---------------------------------------------------------------------
-  // Category modal handlers (Add + Rename). Delete is a plain Popconfirm
-  // inline in categoryColumns below — no modal needed for that one.
-  // ---------------------------------------------------------------------
   const openAddCategory = () => {
     setEditingCategory(null);
     categoryForm.resetFields();
@@ -311,10 +267,15 @@ const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
     setCategoryModalOpen(true);
   };
 
+  // CHANGED: `name` is now already live-capitalized as the user typed it
+  // (see the Form.Item's `normalize` prop below), so submit only trims
+  // stray leading/trailing whitespace before sending -- it no longer calls
+  // the (trim + collapse) capitalizeWords function a second time, which
+  // would just be redundant work at this point.
   const handleCategorySubmit = async () => {
     try {
       const values = await categoryForm.validateFields();
-      const name = capitalizeWords(values.name);
+      const name = values.name.trim();
 
       if (editingCategory) {
         await api.put(`/categories/${editingCategory.id}`, { name });
@@ -331,11 +292,6 @@ const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
     }
   };
 
-  // Unlike product/variant delete, category delete is NOT blocked when it
-  // has products — the backend (ProductCategoryService.deleteProductCategory)
-  // deliberately orphans them to "Uncategorized" instead of refusing. This
-  // Popconfirm just makes that consequence visible before it happens; it
-  // never disables the button the way the product-delete button does.
   const handleDeleteCategory = async (categoryRow) => {
     try {
       await api.delete(`/categories/${categoryRow.id}`);
@@ -352,9 +308,6 @@ const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
     }
   };
 
-  // ---------------------------------------------------------------------
-  // Variant modal handlers
-  // ---------------------------------------------------------------------
   const openAddVariant = (product) => {
     setEditingVariant(null);
     setVariantParentProduct(product);
@@ -397,75 +350,76 @@ const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
     }
   };
 
+  // CHANGED: previously a single generic message.error() on any failure.
+  // Now mirrors handleDeleteProduct's branching exactly -- network/403/409
+  // get their own specific messages, everything else falls to a generic
+  // one. This was open question #1 from the earlier handoff list.
   const handleDeleteVariant = async (id) => {
     try {
       await api.delete(`/product-variants/${id}`);
       message.success("Variant deleted.");
       fetchAll();
     } catch (err) {
-      message.error("Failed to delete variant.");
+      if (!err.response) {
+        message.error("Can't reach the server. Is the backend running?");
+      } else if (err.response.status === 409) {
+        message.error(
+          err.response.data?.message ||
+            "This variant is still referenced elsewhere — can't delete."
+        );
+      } else if (err.response.status === 403) {
+        message.error("Only a director can delete a variant.");
+      } else {
+        message.error("Failed to delete variant.");
+      }
     }
   };
 
-  // ---------------------------------------------------------------------
-  // Stock edit modal (director only)
-  // ---------------------------------------------------------------------
-const openStockEdit = async (type, record) => {
-  setStockTarget({ type, record });
-  stockForm.resetFields();
-  stockForm.setFieldsValue({ currentStock: record.currentStock });
-  setStockModalOpen(true);
+  const openStockEdit = (type, record) => {
+    setStockTarget({ type, record });
+    stockForm.resetFields();
+    stockForm.setFieldsValue({ currentStock: record.currentStock });
+    setStockModalOpen(true);
 
-  // NEW: pull this product/variant's adjustment history so you can see
-  // past edits without leaving the modal — makes testing self-verifying.
-  setStockHistoryLoading(true);
-  try {
+    setStockHistoryLoading(true);
     const endpoint =
       type === "product"
         ? `/stock-adjustments/product/${record.id}`
         : `/stock-adjustments/variant/${record.id}`;
-    const res = await api.get(endpoint);
-    setStockHistory(res.data);
-  } catch (err) {
-    setStockHistory([]); // fail quiet here — history is a nice-to-have, not blocking
-  } finally {
-    setStockHistoryLoading(false);
-  }
-};
+    api
+      .get(endpoint)
+      .then((res) => setStockHistory(res.data))
+      .catch(() => setStockHistory([]))
+      .finally(() => setStockHistoryLoading(false));
+  };
 
   const handleStockSubmit = async () => {
-  try {
-    const values = await stockForm.validateFields();
-    const { type, record } = stockTarget;
+    try {
+      const values = await stockForm.validateFields();
+      const { type, record } = stockTarget;
 
-    // CHANGED: was smuggling stockEditReason through updateProduct/updateVariant,
-    // which silently dropped it (no backend column). Now hits the real,
-    // dedicated endpoint that both applies the stock change AND logs it.
-    await api.post("/stock-adjustments", {
-      productId: type === "product" ? record.id : record.product.id,
-      productVariantId: type === "variant" ? record.id : null,
-      newStock: values.currentStock,
-      reason: values.reason,
-    });
+      await api.post("/stock-adjustments", {
+        productId: type === "product" ? record.id : record.product.id,
+        productVariantId: type === "variant" ? record.id : null,
+        newStock: values.currentStock,
+        reason: values.reason,
+      });
 
-    message.success("Stock updated.");
-    setStockModalOpen(false);
-    fetchAll();
-  } catch (err) {
-    if (err?.errorFields) return;
-    if (err.response?.status === 403) {
-      message.error("Only a director can adjust stock.");
-    } else if (err.response?.status === 400) {
-      message.error(err.response.data?.message || "Invalid stock adjustment.");
-    } else {
-      message.error("Failed to update stock.");
+      message.success("Stock updated.");
+      setStockModalOpen(false);
+      fetchAll();
+    } catch (err) {
+      if (err?.errorFields) return;
+      if (err.response?.status === 403) {
+        message.error("Only a director can adjust stock.");
+      } else if (err.response?.status === 400) {
+        message.error(err.response.data?.message || "Invalid stock adjustment.");
+      } else {
+        message.error("Failed to update stock.");
+      }
     }
-  }
-};
+  };
 
-  // ---------------------------------------------------------------------
-  // Column definitions — three levels: Category, Product, Variant
-  // ---------------------------------------------------------------------
   const variantColumns = [
     { title: "Producer", dataIndex: "producer", key: "producer" },
     { title: "Size", dataIndex: "size", key: "size" },
@@ -516,12 +470,16 @@ const openStockEdit = async (type, record) => {
           `₦${record.pricePerUnit?.toLocaleString() ?? "-"}`
         ),
     },
+    // CHANGED: previously always showed "See variants" as placeholder text
+    // for any product with variants. Now sums each variant's currentStock
+    // and shows the real total -- the number that matters when someone's
+    // scanning the top-level list without expanding every row.
     {
       title: "Stock",
       key: "stock",
       render: (_, record) =>
         record.variants.length > 0 ? (
-          <Text type="secondary">See variants</Text>
+          record.variants.reduce((sum, v) => sum + (v.currentStock ?? 0), 0)
         ) : (
           record.currentStock
         ),
@@ -529,10 +487,6 @@ const openStockEdit = async (type, record) => {
     {
       title: "Actions",
       key: "actions",
-      // Wrapped with stopPropagation because this table's expandRowByClick
-      // (below) makes the whole product <tr> clickable to expand/collapse
-      // variants. Without it, clicking Edit/Delete/etc. would ALSO toggle
-      // the row's expand state as the click bubbles up.
       render: (_, record) => (
         <div onClick={(e) => e.stopPropagation()}>
           <Space wrap>
@@ -575,8 +529,6 @@ const openStockEdit = async (type, record) => {
     ),
   };
 
-  // Category is now a real, top-level table row — this replaces the old
-  // one-Card-per-category loop entirely.
   const categoryColumns = [
     { title: "Category", dataIndex: "name", key: "name" },
     {
@@ -590,8 +542,6 @@ const openStockEdit = async (type, record) => {
       render: (_, record) => (
         <div onClick={(e) => e.stopPropagation()}>
           <Space wrap>
-            {/* "Uncategorized" is a synthetic bucket, not a real category —
-                you can't add into it, rename it, or delete it. */}
             {!record.isUncategorized && (
               <Button size="small" icon={<PlusOutlined />} onClick={() => openAddProduct(record)}>
                 Add Product
@@ -669,7 +619,6 @@ const openStockEdit = async (type, record) => {
         />
       )}
 
-      {/* Add/Rename Category modal */}
       <Modal
         title={editingCategory ? "Rename Category" : "Add Category"}
         open={categoryModalOpen}
@@ -682,13 +631,13 @@ const openStockEdit = async (type, record) => {
             name="name"
             label="Category Name"
             rules={[{ required: true, message: "Category name is required." }]}
+            normalize={(value) => liveCapitalize(value)}
           >
             <Input placeholder="e.g. Tiles, Cement, Doors" />
           </Form.Item>
         </Form>
       </Modal>
 
-      {/* Add/Edit Product modal */}
       <Modal
         title={
           editingProduct ? "Edit Product" : `Add Product — ${addTargetCategory?.name ?? ""}`
@@ -706,10 +655,6 @@ const openStockEdit = async (type, record) => {
             <Input placeholder="e.g. bags, lengths, cartons" />
           </Form.Item>
 
-          {/* Category field only shows in Edit mode. In Add mode, category
-              is already fixed by which category row "Add Product" was
-              clicked on — no field needed, no risk of picking the wrong
-              one. */}
           {editingProduct && (
             <Form.Item name="categoryId" label="Category">
               <Select
@@ -744,7 +689,6 @@ const openStockEdit = async (type, record) => {
         </Form>
       </Modal>
 
-      {/* Add/Edit Variant modal */}
       <Modal
         title={
           editingVariant
@@ -772,51 +716,49 @@ const openStockEdit = async (type, record) => {
         </Form>
       </Modal>
 
-      {/* Director-only stock edit modal */}
       <Modal
-  title="Edit Stock"
-  open={stockModalOpen}
-  onOk={handleStockSubmit}
-  onCancel={() => setStockModalOpen(false)}
-  destroyOnClose
->
-  <Form form={stockForm} layout="vertical">
-    <Form.Item name="currentStock" label="New Stock Value" rules={[{ required: true }]}>
-      <InputNumber style={{ width: "100%" }} min={0} />
-    </Form.Item>
-    <Form.Item
-      name="reason"
-      label="Reason for adjustment"
-      rules={[{ required: true, message: "A reason is required for manual stock edits." }]}
-    >
-      <Input.TextArea rows={3} placeholder="e.g. customer return, recount correction, damaged goods" />
-    </Form.Item>
-  </Form>
+        title="Edit Stock"
+        open={stockModalOpen}
+        onOk={handleStockSubmit}
+        onCancel={() => setStockModalOpen(false)}
+        destroyOnClose
+      >
+        <Form form={stockForm} layout="vertical">
+          <Form.Item name="currentStock" label="New Stock Value" rules={[{ required: true }]}>
+            <InputNumber style={{ width: "100%" }} min={0} />
+          </Form.Item>
+          <Form.Item
+            name="reason"
+            label="Reason for adjustment"
+            rules={[{ required: true, message: "A reason is required for manual stock edits." }]}
+          >
+            <Input.TextArea rows={3} placeholder="e.g. customer return, recount correction, damaged goods" />
+          </Form.Item>
+        </Form>
 
-  {/* NEW: adjustment history for this product/variant */}
-  <Text strong>Adjustment history</Text>
-  <Table
-    style={{ marginTop: 8 }}
-    size="small"
-    loading={stockHistoryLoading}
-    dataSource={stockHistory}
-    rowKey="id"
-    pagination={false}
-    locale={{ emptyText: "No adjustments yet." }}
-    columns={[
-      { title: "Previous", dataIndex: "previousStock", key: "previousStock" },
-      { title: "New", dataIndex: "newStock", key: "newStock" },
-      { title: "Reason", dataIndex: "reason", key: "reason" },
-      { title: "By", dataIndex: "adjustedByName", key: "adjustedByName" },
-      {
-        title: "When",
-        dataIndex: "createdAt",
-        key: "createdAt", 
-        render: (v) => new Date(v).toLocaleString(),
-      },
-    ]}
-  />
-</Modal>
+        <Text strong>Adjustment history</Text>
+        <Table
+          style={{ marginTop: 8 }}
+          size="small"
+          loading={stockHistoryLoading}
+          dataSource={stockHistory}
+          rowKey="id"
+          pagination={false}
+          locale={{ emptyText: "No adjustments yet." }}
+          columns={[
+            { title: "Previous", dataIndex: "previousStock", key: "previousStock" },
+            { title: "New", dataIndex: "newStock", key: "newStock" },
+            { title: "Reason", dataIndex: "reason", key: "reason" },
+            { title: "By", dataIndex: "adjustedByName", key: "adjustedByName" },
+            {
+              title: "When",
+              dataIndex: "createdAt",
+              key: "createdAt",
+              render: (v) => new Date(v).toLocaleString(),
+            },
+          ]}
+        />
+      </Modal>
     </div>
   );
 }

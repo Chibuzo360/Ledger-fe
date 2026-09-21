@@ -17,12 +17,17 @@ import {
   Tag,
   Divider,
 } from "antd";
-import { PlusOutlined } from "@ant-design/icons";
+import { PlusOutlined, EditOutlined } from "@ant-design/icons";
 import api from "../api/axiosConfig";
+import { useAuth } from "../context/AuthContext";
 
 const { Title, Text } = Typography;
 
 const RetailersPage = () => {
+  // NEW: needed for the director-only Edit button below.
+  const { user } = useAuth();
+  const isDirector = user?.role === "director";
+
   const [retailers, setRetailers] = useState([]);
   const [allTransactions, setAllTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -31,6 +36,17 @@ const RetailersPage = () => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm();
+
+  // NEW: director-only edit modal — deliberately scoped to businessName,
+  // contactName, and phone only, matching exactly what was asked for.
+  // creditLimit/balance stay editable only via a future dedicated flow if
+  // one's ever needed — this form doesn't touch them, even though the
+  // backend's updateRetailers() technically accepts them, to keep this
+  // button's blast radius small and obvious from its own UI.
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingRetailer, setEditingRetailer] = useState(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [editForm] = Form.useForm();
 
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [selectedRetailer, setSelectedRetailer] = useState(null);
@@ -71,13 +87,9 @@ const RetailersPage = () => {
     fetchAll();
   }, []);
 
-  // Amount Owed = money the retailer owes us. Derived, not stored — same
-  // pattern as the dashboard stats. Sums (totalAmount - amountPaid) across
-  // every transaction linked to this retailer.
-
   const getAmountOwed = (retailerId) => {
     return allTransactions
-      .filter((t) => t.retailer?.id === retailerId) //this callback function takes the all txns and filters it by to only the ones that has their retailerid = the retailer id passed to the function initially
+      .filter((t) => t.retailer?.id === retailerId)
       .reduce((sum, t) => sum + (t.totalAmount - t.amountPaid), 0);
   };
 
@@ -110,9 +122,54 @@ const RetailersPage = () => {
     }
   };
 
-  // Product Owed = goods we owe the retailer (they paid/ordered, we haven't
-  // fully delivered). Fetched fresh per retailer via the new endpoint — one
-  // request per detail view, not one per transaction.
+  // NEW: opens the edit modal, prefilled with the retailer's current
+  // businessName/contactName/phone.
+  const openEditRetailer = (retailer) => {
+    setEditingRetailer(retailer);
+    editForm.setFieldsValue({
+      businessName: retailer.businessName,
+      contactName: retailer.contactName,
+      phone: retailer.phone,
+    });
+    setIsEditModalOpen(true);
+  };
+
+  // NEW: sends businessName/contactName/phone, plus the retailer's
+  // EXISTING creditLimit/balance unchanged -- the backend's updateRetailers
+  // replaces the whole record from what's sent, so omitting those two
+  // would accidentally wipe them to null. Sending them back as-is keeps
+  // this button's effect limited to exactly the three fields in its form.
+  const handleEditRetailer = async (values) => {
+    setEditSubmitting(true);
+    try {
+      await api.put(`/retailers/${editingRetailer.id}`, {
+        businessName: values.businessName,
+        contactName: values.contactName || null,
+        phone: values.phone || null,
+        creditLimit: editingRetailer.creditLimit,
+        balance: editingRetailer.balance,
+      });
+      message.success("Retailer updated.");
+      setIsEditModalOpen(false);
+      editForm.resetFields();
+      fetchAll();
+    } catch (error) {
+      if (!error.response) {
+        message.error("Can't reach the server.");
+      } else if (error.response.status === 403) {
+        message.error("Only a director can edit a retailer's details.");
+      } else if (error.response.status === 404) {
+        message.error(
+          "Update endpoint not found — the backend route for editing retailers may not exist yet.",
+        );
+      } else {
+        message.error(`Failed to save: ${error.response.status}`);
+      }
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
   const openDetails = async (retailer) => {
     setSelectedRetailer(retailer);
     setIsDetailsOpen(true);
@@ -130,8 +187,6 @@ const RetailersPage = () => {
     }
   };
 
-  // Groups outstanding (not-yet-delivered) quantities by product/variant,
-  // so the modal shows "Cement — 20 bags owed" instead of a raw item list.
   const getProductOwedSummary = () => {
     const outstanding = retailerItems.filter(
       (item) => item.quantityOrdered > item.quantitySupplied,
@@ -176,7 +231,6 @@ const RetailersPage = () => {
       key: "creditLimit",
       render: (val) => `₦${(val ?? 0).toLocaleString()}`,
     },
-    // this column should warn in the future when credit limit is exceeded
     {
       title: "Available Credit",
       dataIndex: "availableCredit",
@@ -205,9 +259,19 @@ const RetailersPage = () => {
       title: "Actions",
       key: "actions",
       render: (_, record) => (
-        <Button type="link" onClick={() => openDetails(record)}>
-          Details
-        </Button>
+        <Space>
+          <Button type="link" onClick={() => openDetails(record)}>
+            Details
+          </Button>
+          {/* NEW: director-only edit button. */}
+          {isDirector && (
+            <Button
+              type="text"
+              icon={<EditOutlined />}
+              onClick={() => openEditRetailer(record)}
+            />
+          )}
+        </Space>
       ),
     },
   ];
@@ -323,6 +387,42 @@ const RetailersPage = () => {
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={submitting} block>
               Save Retailer
+            </Button>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* NEW: director-only edit modal — businessName/contactName/phone only. */}
+      <Modal
+        title={`Edit Retailer — ${editingRetailer?.businessName ?? ""}`}
+        open={isEditModalOpen}
+        onCancel={() => {
+          setIsEditModalOpen(false);
+          editForm.resetFields();
+        }}
+        footer={null}
+        destroyOnClose
+      >
+        <Form form={editForm} layout="vertical" onFinish={handleEditRetailer}>
+          <Form.Item
+            label="Business Name"
+            name="businessName"
+            rules={[{ required: true, message: "Business name is required" }]}
+          >
+            <Input />
+          </Form.Item>
+
+          <Form.Item label="Contact Name" name="contactName">
+            <Input placeholder="Optional" />
+          </Form.Item>
+
+          <Form.Item label="Phone" name="phone">
+            <Input placeholder="Optional" />
+          </Form.Item>
+
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={editSubmitting} block>
+              Save Changes
             </Button>
           </Form.Item>
         </Form>

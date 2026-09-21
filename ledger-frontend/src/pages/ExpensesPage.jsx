@@ -38,8 +38,11 @@ const ExpensesPage = () => {
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm();
 
-  const [filterMode, setFilterMode] = useState("single"); // "single" | "range"
-  const [singleDate, setSingleDate] = useState(null);
+  // CHANGED: defaults to today instead of null -- matches the "one-day
+  // default everywhere money is displayed" decision applied to
+  // TransactionsPage earlier.
+  const [filterMode, setFilterMode] = useState("single");
+  const [singleDate, setSingleDate] = useState(dayjs());
   const [dateRange, setDateRange] = useState(null);
 
   const [searchText, setSearchText] = useState("");
@@ -143,13 +146,20 @@ const ExpensesPage = () => {
     return expenses;
   };
 
+  // CHANGED: now also matches against amount, not just description/ID.
+  // "15000" or "15,000.5" both work since we strip to digits/decimal on
+  // both sides before comparing -- a plain substring match on the raw
+  // number was rejected in favor of this because it also lets someone
+  // search "15000" and match an amount stored as 15000.00 without needing
+  // to type the trailing zeros.
   const getSearchedExpenses = (expenses) => {
     if (!searchText.trim()) return expenses;
     const text = searchText.trim().toLowerCase();
     return expenses.filter(
       (e) =>
         e.description.toLowerCase().includes(text) ||
-        String(e.id).includes(text),
+        String(e.id).includes(text) ||
+        String(e.amount).includes(text),
     );
   };
 
@@ -283,8 +293,8 @@ const ExpensesPage = () => {
           </Col>
           <Col>
             <Search
-              placeholder="Search by description or ID"
-              style={{ width: 240 }}
+              placeholder="Search by description, ID, or amount"
+              style={{ width: 260 }}
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
               allowClear
@@ -338,7 +348,7 @@ const ExpensesPage = () => {
           </Form.Item>
 
           <Form.Item>
-            <Button type="primary" htmlType="submit" loading={submitting} block>``
+            <Button type="primary" htmlType="submit" loading={submitting} block>
               Save Expense
             </Button>
           </Form.Item>

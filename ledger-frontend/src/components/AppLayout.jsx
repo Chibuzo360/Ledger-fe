@@ -14,8 +14,6 @@ const AppLayout = () => {
     navigate('/login');
   };
 
-  // Define the links for our sidebar menu
-  //new
   const menuItems = [
     {
       key: '1',
@@ -41,12 +39,17 @@ const AppLayout = () => {
       key: '6',
       label: <Link to="/stock-in">Stock In</Link>,
     }
-    // We will add more links (, Stock In, etc.) as we build them
   ];
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      {/* Sidebar Navigation */}
+    // CHANGED: minHeight -> height. minHeight lets this Layout (and
+    // everything in it, including the browser body) grow taller than the
+    // viewport whenever a page's content is long -- which is exactly what
+    // was making the WHOLE PAGE scroll instead of just the table inside
+    // it. Fixing height to 100vh means this outer shell can never grow
+    // past the viewport; only the Content region below (which gets its
+    // own overflow: auto) is allowed to scroll internally.
+    <Layout style={{ height: '100vh' }}>
       <Sider breakpoint="lg" collapsedWidth="0">
         <div style={{ height: 32, margin: 16, background: 'rgba(255, 255, 255, 0.2)', color: '#fff', textAlign: 'center', lineHeight: '32px' }}>
           CAV LEDGER
@@ -54,10 +57,12 @@ const AppLayout = () => {
         <Menu theme="dark" mode="inline" defaultSelectedKeys={['1']} items={menuItems} />
       </Sider>
 
-      {/* Main App Container */}
-      <Layout>
-        {/* Top Header Bar */}
-        <Header style={{ background: '#fff', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      {/* CHANGED: same height fix applied to this inner Layout too --
+          antd's vertical Layout is a flex column, so without an explicit
+          height here this inner shell would still be free to grow with
+          its content and drag the outer one with it. */}
+      <Layout style={{ height: '100vh' }}>
+        <Header style={{ background: '#fff', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flex: '0 0 auto' }}>
           <div>
             <span>Welcome, <strong>{user?.name || 'User'}</strong> </span>
             <span style={{ fontSize: '12px', color: '#8c8c8c' }}>({user?.role})</span>
@@ -67,9 +72,13 @@ const AppLayout = () => {
           </Button>
         </Header>
 
-        {/* Dynamic Content Area */}
-        <Content style={{ margin: '24px 16px', padding: 24, background: '#fff', minHeight: 280 }}>
-          <Outlet /> {/* This dynamically renders the active child route component */}
+        {/* CHANGED: flex:1 lets this Content region claim exactly the
+            leftover vertical space below the fixed-height Header, and
+            overflow:auto gives IT the scrollbar -- not the page. Every
+            page's table (or anything else long) now scrolls inside this
+            box, while the Sider and Header stay pinned on screen. */}
+        <Content style={{ margin: '24px 16px', padding: 24, background: '#fff', flex: '1 1 auto', overflow: 'auto' }}>
+          <Outlet />
         </Content>
       </Layout>
     </Layout>
