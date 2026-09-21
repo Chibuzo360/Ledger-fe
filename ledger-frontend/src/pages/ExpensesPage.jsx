@@ -19,6 +19,7 @@ import {
 } from "antd";
 import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import { useAuth } from "../context/AuthContext";
+import { useFilterState } from "../context/FilterContext"; // NEW
 import api from "../api/axiosConfig";
 import Search from "antd/es/input/Search";
 import dayjs from "dayjs";
@@ -41,9 +42,16 @@ const ExpensesPage = () => {
   // CHANGED: defaults to today instead of null -- matches the "one-day
   // default everywhere money is displayed" decision applied to
   // TransactionsPage earlier.
-  const [filterMode, setFilterMode] = useState("single");
-  const [singleDate, setSingleDate] = useState(dayjs());
-  const [dateRange, setDateRange] = useState(null);
+  // CHANGED: same fix as TransactionsPage -- backed by useFilterState now,
+  // keyed "expenses" (a different key from Transactions' "transactions",
+  // so the two stay fully independent per the "each page remembers its
+  // own separately" decision).
+  const [dateFilter, setDateFilter] = useFilterState("expenses", {
+    filterMode: "single",
+    singleDate: dayjs(),
+    dateRange: null,
+  });
+  const { filterMode, singleDate, dateRange } = dateFilter;
 
   const [searchText, setSearchText] = useState("");
 
@@ -273,20 +281,20 @@ const ExpensesPage = () => {
               options={["Single", "Range"]}
               value={filterMode === "single" ? "Single" : "Range"}
               onChange={(val) =>
-                setFilterMode(val === "Single" ? "single" : "range")
+                setDateFilter({ filterMode: val === "Single" ? "single" : "range" })
               }
             />
             <Divider orientation="vertical" />
             {filterMode === "single" ? (
               <DatePicker
                 value={singleDate}
-                onChange={(date) => setSingleDate(date)}
+                onChange={(date) => setDateFilter({ singleDate: date })}
                 allowClear
               />
             ) : (
               <DatePicker.RangePicker
                 value={dateRange}
-                onChange={(dates) => setDateRange(dates)}
+                onChange={(dates) => setDateFilter({ dateRange: dates })}
                 allowClear
               />
             )}

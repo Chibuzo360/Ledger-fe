@@ -2,6 +2,7 @@ import React from 'react';
 import { Layout, Menu, Button } from 'antd';
 import { Link, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { FilterProvider } from '../context/FilterContext'; // NEW
 
 const { Header, Sider, Content } = Layout;
 
@@ -78,7 +79,12 @@ const AppLayout = () => {
             page's table (or anything else long) now scrolls inside this
             box, while the Sider and Header stay pinned on screen. */}
         <Content style={{ margin: '24px 16px', padding: 24, background: '#fff', flex: '1 1 auto', overflow: 'auto' }}>
-          <Outlet />
+          {/* NEW: FilterProvider wraps every routed page here, above the
+              individual page components -- this is what lets a page's date
+              filter survive being unmounted/remounted on navigation. */}
+          <FilterProvider>
+            <Outlet />
+          </FilterProvider>
         </Content>
       </Layout>
     </Layout>

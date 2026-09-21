@@ -25,6 +25,7 @@ import {
 } from "antd";
 import { DownOutlined, MoreOutlined, PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import { useAuth } from "../context/AuthContext";
+import { useFilterState } from "../context/FilterContext"; // NEW
 import api from "../api/axiosConfig";
 import currentDayDate from "../components/CurrentDayDate";
 import Search from "antd/es/input/Search";
@@ -134,9 +135,18 @@ const TransactionsPage = () => {
   const [supplySubmitting, setSupplySubmitting] = useState(false);
   const [supplyForm] = Form.useForm();
 
-  const [filterMode, setFilterMode] = useState("single");
-  const [singleDate, setSingleDate] = useState(dayjs());
-  const [dateRange, setDateRange] = useState(null);
+  // CHANGED: was three separate useState calls, which reset to their
+  // initial values every time this page unmounts and remounts (i.e. every
+  // time you navigate away and back). Now backed by useFilterState, keyed
+  // "transactions" -- the values persist across navigation, but still
+  // start at today/single-day the very first time (nothing stored yet),
+  // matching "stays at the default until the user explicitly changes it."
+  const [dateFilter, setDateFilter] = useFilterState("transactions", {
+    filterMode: "single",
+    singleDate: dayjs(),
+    dateRange: null,
+  });
+  const { filterMode, singleDate, dateRange } = dateFilter;
 
   const [statusFilter, setStatusFilter] = useState(null);
 
@@ -971,7 +981,7 @@ const TransactionsPage = () => {
             options={["Single", "Range"]}
             value={filterMode === "single" ? "Single" : "Range"}
             onChange={(val) =>
-              setFilterMode(val === "Single" ? "single" : "range")
+              setDateFilter({ filterMode: val === "Single" ? "single" : "range" })
             }
           />
           <Divider orientation="vertical" />
@@ -979,13 +989,13 @@ const TransactionsPage = () => {
           {filterMode === "single" ? (
             <DatePicker
               value={singleDate}
-              onChange={(date) => setSingleDate(date)}
+              onChange={(date) => setDateFilter({ singleDate: date })}
               allowClear
             />
           ) : (
             <DatePicker.RangePicker
               value={dateRange}
-              onChange={(dates) => setDateRange(dates)}
+              onChange={(dates) => setDateFilter({ dateRange: dates })}
               allowClear
             />
           )}
