@@ -15,8 +15,10 @@ import {
   Popconfirm,
   Tooltip,
   Empty,
+  Descriptions,
+  Tag,
 } from "antd";
-import { PlusOutlined, EditOutlined, DeleteOutlined } from "@ant-design/icons";
+import { PlusOutlined, EditOutlined, DeleteOutlined, InfoCircleOutlined } from "@ant-design/icons";
 import api from "../api/axiosConfig";
 import { useAuth } from "../context/AuthContext";
 
@@ -84,6 +86,18 @@ export default function ProductPage() {
 
   const [stockHistory, setStockHistory] = useState([]);
   const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
+
+  // NEW: separate "Details" view -- view-only (no role gate), reachable
+  // from any product or variant row. Shows basic info plus a UNIFIED
+  // history merging StockIn (received) and StockAdjustment (corrected)
+  // events into one chronological timeline. Deliberately kept separate
+  // from stockModalOpen/stockHistory above (Edit Stock's own adjustment-
+  // only history) rather than replacing it -- that existing view stays
+  // exactly where it was.
+  const [detailsModalOpen, setDetailsModalOpen] = useState(false);
+  const [detailsTarget, setDetailsTarget] = useState(null); // { type: 'product' | 'variant', record }
+  const [detailsHistory, setDetailsHistory] = useState([]);
+  const [detailsHistoryLoading, setDetailsHistoryLoading] = useState(false);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -393,6 +407,69 @@ export default function ProductPage() {
       .finally(() => setStockHistoryLoading(false));
   };
 
+  // NEW: opens the view-only Details modal for a product or variant row.
+  // Fetches StockIn history and StockAdjustment history in parallel (two
+  // independent, already-existing endpoints -- no new backend work), then
+  // normalizes both into one common shape so they can share a single
+  // table instead of forcing the person to cross-reference two separate
+  // lists by eye. Each request fails independently -- if one source is
+  // unreachable, the other still renders rather than the whole view going
+  // blank.
+  const openDetails = async (type, record) => {
+    setDetailsTarget({ type, record });
+    setDetailsModalOpen(true);
+    setDetailsHistoryLoading(true);
+
+    const stockInEndpoint =
+      type === "product" ? `/stock_in/product/${record.id}` : `/stock_in/variant/${record.id}`;
+    const adjustmentEndpoint =
+      type === "product"
+        ? `/stock-adjustments/product/${record.id}`
+        : `/stock-adjustments/variant/${record.id}`;
+
+    const [stockInResult, adjustmentResult] = await Promise.allSettled([
+      api.get(stockInEndpoint),
+      api.get(adjustmentEndpoint),
+    ]);
+
+    const stockInRows =
+      stockInResult.status === "fulfilled"
+        ? stockInResult.value.data.map((s) => ({
+            key: `stockin-${s.id}`,
+            date: s.createdAt,
+            eventType: "received",
+            changeLabel: `+${s.quantity}`,
+            detail: [s.supplierName, s.truckNumber && `Truck ${s.truckNumber}`]
+              .filter(Boolean)
+              .join(" — ") || "—",
+            by: s.recordedBy?.name ?? "—",
+          }))
+        : [];
+
+    const adjustmentRows =
+      adjustmentResult.status === "fulfilled"
+        ? adjustmentResult.value.data.map((a) => ({
+            key: `adjustment-${a.id}`,
+            date: a.createdAt,
+            eventType: "adjusted",
+            changeLabel: `${a.previousStock} → ${a.newStock}`,
+            detail: a.reason,
+            by: a.adjustedByName ?? "—",
+          }))
+        : [];
+
+    const merged = [...stockInRows, ...adjustmentRows].sort(
+      (a, b) => new Date(b.date) - new Date(a.date),
+    );
+
+    setDetailsHistory(merged);
+    setDetailsHistoryLoading(false);
+
+    if (stockInResult.status === "rejected" && adjustmentResult.status === "rejected") {
+      message.error("Couldn't load history for this item.");
+    }
+  };
+
   const handleStockSubmit = async () => {
     try {
       const values = await stockForm.validateFields();
@@ -435,6 +512,9 @@ export default function ProductPage() {
       key: "actions",
       render: (_, record) => (
         <Space>
+          <Button size="small" icon={<InfoCircleOutlined />} onClick={() => openDetails("variant", record)}>
+            Details
+          </Button>
           <Button size="small" icon={<EditOutlined />} onClick={() => openEditVariant(record)}>
             Edit
           </Button>
@@ -490,6 +570,9 @@ export default function ProductPage() {
       render: (_, record) => (
         <div onClick={(e) => e.stopPropagation()}>
           <Space wrap>
+            <Button size="small" icon={<InfoCircleOutlined />} onClick={() => openDetails("product", record)}>
+              Details
+            </Button>
             <Button size="small" icon={<EditOutlined />} onClick={() => openEditProduct(record)}>
               Edit
             </Button>
@@ -754,6 +837,109 @@ export default function ProductPage() {
               title: "When",
               dataIndex: "createdAt",
               key: "createdAt",
+              render: (v) => new Date(v).toLocaleString(),
+            },
+          ]}
+        />
+      </Modal>
+
+      {/* NEW: view-only Details modal -- reachable by anyone, no role
+          gate. Shows basic item info, then one unified, chronologically
+          sorted table merging StockIn (received) and StockAdjustment
+          (corrected) events -- answers "why does this have the stock it
+          has" in one place instead of two. Deliberately separate from the
+          Edit Stock modal above, which keeps its own adjustment-only
+          history exactly as it was. */}
+      <Modal
+        title={
+          detailsTarget?.type === "variant"
+            ? `Details — ${detailsTarget.record.producer ?? ""} ${detailsTarget.record.size ?? ""}`.trim()
+            : `Details — ${detailsTarget?.record?.name ?? ""}`
+        }
+        open={detailsModalOpen}
+        onCancel={() => setDetailsModalOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setDetailsModalOpen(false)}>
+            Close
+          </Button>,
+        ]}
+        width={700}
+        destroyOnClose
+      >
+        {detailsTarget && (
+          <Descriptions column={2} bordered size="small">
+            {detailsTarget.type === "variant" ? (
+              <>
+                <Descriptions.Item label="Product">
+                  {detailsTarget.record.product?.name ?? "—"}
+                </Descriptions.Item>
+                <Descriptions.Item label="Producer">
+                  {detailsTarget.record.producer || "—"}
+                </Descriptions.Item>
+                <Descriptions.Item label="Size">
+                  {detailsTarget.record.size || "—"}
+                </Descriptions.Item>
+                <Descriptions.Item label="Price">
+                  ₦{detailsTarget.record.pricePerUnit?.toLocaleString() ?? "-"}
+                </Descriptions.Item>
+                <Descriptions.Item label="Current Stock">
+                  {detailsTarget.record.currentStock}
+                </Descriptions.Item>
+              </>
+            ) : (
+              <>
+                <Descriptions.Item label="Name">
+                  {detailsTarget.record.name}
+                </Descriptions.Item>
+                <Descriptions.Item label="Unit">
+                  {detailsTarget.record.unit || "—"}
+                </Descriptions.Item>
+                <Descriptions.Item label="Category">
+                  {detailsTarget.record.category?.name ?? "Uncategorized"}
+                </Descriptions.Item>
+                {detailsTarget.record.variants?.length === 0 && (
+                  <>
+                    <Descriptions.Item label="Price">
+                      ₦{detailsTarget.record.pricePerUnit?.toLocaleString() ?? "-"}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Current Stock">
+                      {detailsTarget.record.currentStock}
+                    </Descriptions.Item>
+                  </>
+                )}
+              </>
+            )}
+          </Descriptions>
+        )}
+
+        <Text strong style={{ display: "block", marginTop: 20, marginBottom: 8 }}>
+          Stock History
+        </Text>
+        <Table
+          size="small"
+          loading={detailsHistoryLoading}
+          dataSource={detailsHistory}
+          rowKey="key"
+          pagination={false}
+          locale={{ emptyText: "No stock movements recorded yet." }}
+          columns={[
+            {
+              title: "Type",
+              dataIndex: "eventType",
+              key: "eventType",
+              render: (type) => (
+                <Tag color={type === "received" ? "green" : "gold"}>
+                  {type === "received" ? "RECEIVED" : "ADJUSTED"}
+                </Tag>
+              ),
+            },
+            { title: "Change", dataIndex: "changeLabel", key: "changeLabel" },
+            { title: "Detail", dataIndex: "detail", key: "detail" },
+            { title: "By", dataIndex: "by", key: "by" },
+            {
+              title: "When",
+              dataIndex: "date",
+              key: "date",
               render: (v) => new Date(v).toLocaleString(),
             },
           ]}
